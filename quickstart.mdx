@@ -1,5 +1,5 @@
 ---
-title: "Get started with ksef-mcp in 4 steps"
+title: "ksef-mcp Quickstart: Install, Configure, and Verify"
 sidebarTitle: "Quickstart"
 description: "Install ksef-mcp, run interactive onboarding, register the server with your MCP client, and verify a live connection to KSeF in under ten minutes."
 ---
@@ -17,7 +17,7 @@ This guide walks you from zero to a working ksef-mcp connection. By the end you 
 
 ### Install prerequisites
 
-ksef-mcp requires **Python 3.13** (pinned exactly) and the **uv** package manager. You do not need to install Python manually — `uv` and `uvx` fetch the correct interpreter automatically.
+ksef-mcp requires **Python 3.13.14** (pinned exactly, not a range) and the **uv** package manager. You do not need to install Python manually — `uv` and `uvx` fetch the correct interpreter automatically.
 
 Install `uv` if you do not have it:
 
@@ -94,7 +94,7 @@ The MCP server communicates over stdio and is launched by your client, not run m
   "mcpServers": {
     "ksef": {
       "command": "uvx",
-      "args": ["--from", "/path/to/local/ksef-mcp", "ksef-mcp"]
+      "args": ["--from", "/path/to/ksef-mcp", "ksef-mcp"]
     }
   }
 }
@@ -123,7 +123,7 @@ uvx ksef-mcp verify
 
 A successful response looks like this:
 
-```bash
+```text
 Querying KSeF (test) as 1234567890…
 Token source: system keyring
 Connected — you are authenticated as Acme Sp. z o.o.

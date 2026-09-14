@@ -1,7 +1,7 @@
 ---
 title: "synchronise_invoices — Incremental KSeF Invoice Archive Sync"
-sidebarTitle: "synchronise_invoices"
-description: "Fetches, decrypts, and archives every invoice package KSeF has finished since the last run. Covers all four subject types with built-in rate limiting and resume-on-failure."
+sidebarTitle: "Synchronise Invoices"
+description: "Fetches and archives KSeF invoice packages across all four subject types. Enforces rate limits locally, deduplicates the archive, and resumes on failure."
 ---
 
 `synchronise_invoices` is the archiving engine of ksef-mcp. Each call opens a KSeF session, reads the current rate-limit budget, and advances the synchronisation state for all four subject types — SELLER, BUYER, THIRD\_SUBJECT, and AUTHORIZED\_SUBJECT — writing the decrypted invoice XML files to the configured archive directory. The tool is safe to call repeatedly: a package already in the archive is reported under `already_held`, never downloaded a second time, and a package whose download failed mid-way is resumed from its saved export key rather than re-requested.
@@ -14,7 +14,7 @@ The date window, the package size, and how many packages to request are decided 
 
 An agent calls this tool with no arguments:
 
-```
+```text
 Call synchronise_invoices
 ```
 
@@ -105,7 +105,7 @@ A package that KSeF itself reports as `FAILED` is recorded with a null key (the 
     </ResponseField>
 
     <ResponseField name="archived" type="list[string]" required>
-      KSeF numbers of invoices written to the archive in this run. Empty when no new invoices were archived (e.g. outcome is `NOT_DUE` or `ALREADY_HELD`).
+      KSeF numbers of invoices written to the archive in this run. Empty when no new invoices were archived (e.g. outcome is `NOT_DUE` or `NOT_ARCHIVED`).
     </ResponseField>
 
     <ResponseField name="already_held" type="list[string]" required>

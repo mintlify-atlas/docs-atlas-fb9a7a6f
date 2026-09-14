@@ -1,5 +1,5 @@
 ---
-title: "ksef-mcp onboarding — Interactive First-Time Setup"
+title: "ksef-mcp onboarding — Guided First-Time Setup Wizard"
 sidebarTitle: "Onboarding"
 description: "Guided wizard that checks prerequisites, prompts for NIP and KSeF environment, stores your token in the OS keyring, and writes the configuration file."
 ---
@@ -148,3 +148,41 @@ Gdy zechcesz to potwierdzić: ksef-mcp verify
 |------|----------|---------|
 | `0` | `EXIT_OK` | Onboarding completed successfully; configuration saved. |
 | `1` | `EXIT_UNUSABLE_KEYRING` | No usable keyring backend found. Export `KSEF_TOKEN` as a fallback or run in a session that has access to an OS secret store. |
+
+---
+
+## `ksef-mcp doctor`
+
+The `doctor` command runs the same preflight checks that `onboarding` performs at the start of its wizard — but does nothing else. It takes no flags, makes no interactive prompts, does not read or write the keyring, and does not contact KSeF.
+
+Use `doctor` whenever you want to inspect your environment without triggering any side effects: after upgrading Node.js, when debugging a missing keyring, or from a script that needs a human-readable status report.
+
+```bash title="Syntax"
+ksef-mcp doctor
+```
+
+The output covers three areas:
+
+- **Node.js** — whether the `node` executable is on `PATH`, its version, the minimum required, and the source of that requirement (Ministry of Finance generator floor, or a `.node-version` pin beside a `.git` root in the working directory).
+- **Keyring backends** — the list of selectable backends with their priority scores, and which one is the current preferred backend. If no usable backend is found, the `KSEF_TOKEN` fallback variable is named as the alternative.
+- **Collection lock state** — on Linux with the D-Bus Secret Service, whether the default collection is currently locked. A locked collection would silently hang the MCP transport, so the state is surfaced here for awareness.
+
+### Example output
+
+```bash title="Example doctor output"
+$ uvx ksef-mcp doctor
+ksef-mcp 0.1.0
+
+Warunki wstępne:
+  Node: 22.14.0 — spełnia wymaganie 22.14.0 (minimum generatora MF).
+  Ścieżka: /home/alice/.local/share/fnm/node-versions/v22.14.0/installation/bin/node
+  Keyring: dostępne magazyny —
+    1. keyring.backends.SecretService (priorytet 5) — domyślny
+  Kolekcja: odblokowana.
+```
+
+### Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Always. `doctor` reports what it finds and exits cleanly regardless of whether the environment is fully healthy. |

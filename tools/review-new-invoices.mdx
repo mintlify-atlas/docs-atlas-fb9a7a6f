@@ -1,7 +1,7 @@
 ---
 title: "review_new_invoices — New Invoices Since Last Review Session"
-sidebarTitle: "review_new_invoices"
-description: "Reports invoices not yet shown to anyone. Compares the last 90 days against a persistent per-subject ledger. Above 50 new invoices, nothing is marked as reviewed."
+sidebarTitle: "Review Invoices"
+description: "Returns invoices new since the last review by comparing a 90-day window to a per-subject ledger of reviewed KSeF numbers. Above 50, nothing is recorded."
 ---
 
 `review_new_invoices` answers the question the Ministry's free taxpayer application cannot: not "what invoices exist?", but "what invoices have arrived since a person last looked?". It compares invoice metadata for the last 90 days against a persistent ledger of KSeF numbers that have already been reported, and returns only the delta — the invoices that are genuinely new to the reader.
@@ -18,7 +18,7 @@ The window is dated by `invoicing_date` (the date KSeF accepted the invoice), no
 
 ## Agent invocation
 
-```
+```text
 Call review_new_invoices
 ```
 

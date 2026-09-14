@@ -1,18 +1,18 @@
 ---
 title: "Running ksef-mcp on Headless Servers, WSL, and Containers"
 sidebarTitle: "Headless & WSL"
-description: "How to configure ksef-mcp when no system keyring is available — the KSEF_TOKEN environment variable fallback, its caveats, and locked-keyring recovery for desktop systems."
+description: "How to configure ksef-mcp when no system keyring is available — the KSEF_TOKEN environment variable fallback, its caveats, and locked-keyring recovery."
 ---
 
 ksef-mcp stores KSeF tokens in the system keyring by default. On headless Linux servers, WSL instances, and containers there is typically no keyring backend available — `ksef-mcp onboarding` detects this and exits immediately rather than proceeding to a state where token storage will silently fail. This page covers the `KSEF_TOKEN` environment variable fallback, its known caveats, and how to handle the related post-sleep locked-keyring scenario on desktop systems.
 
 ## The problem: no keyring backend
 
-When ksef-mcp runs `onboarding`, the first thing it checks is whether a usable keyring backend exists. On headless systems — SSH sessions, WSL without a running Secret Service, Docker containers — none of the selectable backends (`keyring.backends.SecretService`, `keyring.backends.macOS`, `keyring.backends.Windows`) will be present.
+When ksef-mcp runs `onboarding`, the first thing it checks is whether a usable keyring backend exists. On headless systems — SSH sessions, WSL without a running Secret Service, containers — none of the selectable backends will be present.
 
-If no usable backend is found, `onboarding` exits with code `1` and prints:
+If no usable backend is found, `onboarding` exits with code `1` (`EXIT_UNUSABLE_KEYRING`) and prints:
 
-```
+```text
 Bez magazynu nie zapiszę tokenu i nie zapytam o hasło —
 interaktywny prompt zawiesiłby transport MCP. Przerywam.
 ```
@@ -21,7 +21,7 @@ This is intentional. An interactive password prompt inside the MCP stdio transpo
 
 ## The fallback: KSEF_TOKEN environment variable
 
-The `KSEF_TOKEN` environment variable is the documented escape path. When set, it takes precedence over the keyring on every token read. You can use it on any machine — headless, WSL, container, or desktop — and it requires no keyring setup at all.
+The `KSEF_TOKEN` environment variable is the documented escape path. When set, it takes precedence over the keyring on every token read. You can use it on any machine — headless, WSL, or desktop — and it requires no keyring setup at all.
 
 <Steps>
   <Step title="Export the environment variable">
@@ -39,7 +39,7 @@ The `KSEF_TOKEN` environment variable is the documented escape path. When set, i
 
     The output will say:
 
-    ```
+    ```text
     Token dla 1234567890 pochodzi z zmiennej KSEF_TOKEN: ...
     ```
   </Step>
@@ -59,7 +59,7 @@ The `KSEF_TOKEN` environment variable is the documented escape path. When set, i
 
     ksef-mcp will note that the token source is the environment variable and warn that it cannot confirm the token belongs to the configured NIP:
 
-    ```
+    ```text
     Token pochodzi z: zmiennej KSEF_TOKEN
       Zmienna nie jest przypisana do NIP-u, więc nie gwarantuję, że
       należy do 1234567890.
@@ -83,18 +83,15 @@ The `KSEF_TOKEN` environment variable is the documented escape path. When set, i
       }
       ```
 
-      ```bash Docker
-      docker run \
-        -e KSEF_TOKEN=your-ksef-token-here \
-        -v /path/to/invoices:/invoices \
-        your-ksef-mcp-image
-      ```
-
       ```bash Shell export
       export KSEF_TOKEN=your-ksef-token-here
       uvx ksef-mcp
       ```
     </CodeGroup>
+
+    <Note>
+    ksef-mcp is a local tool run via `uvx ksef-mcp`. The env-variable pattern also works from any process launcher that can inject environment variables — the MCP client config `env` block shown above is the standard approach.
+    </Note>
   </Step>
 </Steps>
 
@@ -106,7 +103,7 @@ The `KSEF_TOKEN` environment variable is the documented escape path. When set, i
 
 ### Multiple subjects
 
-The environment variable is a single value with no NIP attached. The token_store source code is explicit about this:
+The environment variable is a single value with no NIP attached. The `token_store` source is explicit about this:
 
 > It is deliberately NOT keyed by NIP — a shell has one of it — so with two subjects configured both resolve to the same token. Callers that know which subject they meant say so out loud.
 
@@ -114,7 +111,7 @@ If you manage invoices for more than one NIP, the keyring is the correct solutio
 
 ### Process environment visibility
 
-The value of `KSEF_TOKEN` is visible in the process environment. Avoid configurations that log all environment variables (for example, certain CI runners, Docker log drivers, or system audit tools configured for process monitoring). A KSeF token that appears in a log is a credential exposure.
+The value of `KSEF_TOKEN` is visible in the process environment. Avoid configurations that log all environment variables (for example, certain CI runners or system audit tools configured for process monitoring). A KSeF token that appears in a log is a credential exposure.
 
 ### Token deletion and the environment variable
 
@@ -122,7 +119,7 @@ The value of `KSEF_TOKEN` is visible in the process environment. Avoid configura
 
 ksef-mcp warns about this explicitly:
 
-```
+```text
 UWAGA: zmienna KSEF_TOKEN jest nadal ustawiona i ma pierwszeństwo,
 więc token wciąż działa.
 Wycofaj go z sesji: unset KSEF_TOKEN
@@ -144,7 +141,7 @@ ksef-mcp doctor
 
 If the output shows:
 
-```
+```text
 Keyring: brak dostępnego magazynu (headless, WSL, kontener).
 Ścieżka awaryjna: wyeksportuj zmienną KSEF_TOKEN.
 ```
@@ -159,7 +156,7 @@ This section applies to **desktop systems** with a working keyring, not to headl
 
 Even when the keyring is available, the Secret Service collection can lock itself after machine sleep or the store's own idle timeout. When this happens, ksef-mcp detects the lock before every token access and exits with an error rather than attempting a read:
 
-```
+```text
 The system keyring collection is locked, so nothing was read or written:
 asking the keyring would open an unlock prompt and hang the MCP
 transport. Unlock the collection in your desktop session, or export

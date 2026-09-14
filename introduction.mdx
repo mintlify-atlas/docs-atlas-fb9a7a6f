@@ -1,5 +1,5 @@
 ---
-title: "ksef-mcp: Local MCP Server for KSeF e-Invoicing"
+title: "Introduction to ksef-mcp: Local MCP Server for KSeF"
 sidebarTitle: "Introduction"
 description: "ksef-mcp connects AI agents to Poland's national e-invoicing registry (KSeF) via a local MCP server — your invoice data never leaves your machine."
 ---
@@ -52,12 +52,12 @@ The MVP scope is intentionally narrow: **find invoices for a given month and dow
   <Card title="Audit trail" icon="file-lines">
     Every read operation — synchronisation, listing, export, review — is
     recorded in a per-entity audit log so you always know what data reached the
-    model context.
+    model context. Activates once invoice sync ships (🚧 Phase 1).
   </Card>
   <Card title="Deduplication and safe purge" icon="shield-check">
     A local deduplication index prevents double-downloads. The `purge` command
     removes invoice files while keeping the index intact, so re-sync never
-    re-fetches purged invoices.
+    re-fetches purged invoices. Activates once invoice sync ships (🚧 Phase 1).
   </Card>
   <Card title="Rate-limit aware" icon="gauge">
     Every KSeF call respects the Ministry's hourly query budget. The server

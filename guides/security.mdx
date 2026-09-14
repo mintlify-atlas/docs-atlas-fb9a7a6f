@@ -1,5 +1,5 @@
 ---
-title: "Security Model and Data Handling in ksef-mcp"
+title: "ksef-mcp Security Model: Tokens, Audit, and Isolation"
 sidebarTitle: "Security"
 description: "How ksef-mcp protects KSeF tokens, invoice bodies, and audit evidence — from keyring storage to file permissions and cloud sync detection."
 ---
@@ -27,11 +27,11 @@ The `KSEF_TOKEN` environment variable is the documented fallback for headless ma
 
 ### Keyring lock detection
 
-Before every single token access — not once at startup — ksef-mcp reads the D-Bus property that reports whether the Secret Service collection is locked. If the collection is locked (for example, after machine sleep or the store's own idle timeout), ksef-mcp raises an error immediately instead of calling `keyring.get_password()`.
+Before every single token access — not once at startup — ksef-mcp calls `refuse_a_locked_collection()`, which reads the D-Bus property that reports whether the Secret Service collection is locked. If the collection is locked (for example, after machine sleep or the store's own idle timeout), ksef-mcp raises an error immediately instead of calling `keyring.get_password()`.
 
-This matters because `keyring.get_password()` on a locked collection opens an unlock prompt. On the MCP stdio transport there is nowhere to display that prompt: it hangs the connection and the agent waiting on the other end. The lock check is the safeguard against that.
+This matters because `keyring.get_password()` on a locked collection opens an unlock prompt. On the MCP stdio transport there is nowhere to display that prompt: it hangs the connection and the agent waiting on the other end. The per-access lock check is the safeguard against that.
 
-```
+```text
 The system keyring collection is locked, so nothing was read or written:
 asking the keyring would open an unlock prompt and hang the MCP
 transport. Unlock the collection in your desktop session, or export
@@ -46,7 +46,7 @@ Run `ksef-mcp doctor` to inspect the keyring and collection lock state without t
 
 Every invoice read — whether an invoice is written to disk, shown to an AI model, recognised as a duplicate, or deleted — is appended to a JSONL file at:
 
-```
+```text
 <user_data_path>/ksef-mcp/subjects/<NIP>/<environment>/audit.jsonl
 ```
 
@@ -54,14 +54,14 @@ The file is created with mode `0600`. Its parent directory is created with mode 
 
 ### Four disclosure types
 
-Each entry carries one of four `disclosure` values that distinguish what happened to the invoice:
+Each entry carries one of four `disclosure` values (from the `Disclosure` StrEnum) that distinguish what happened to the invoice:
 
-| Disclosure | Meaning |
-|---|---|
-| `disk` | Invoice body was written to the archive on disk |
-| `model_context` | Invoice metadata entered a tool response — the AI model saw it |
-| `deduplication_skip` | Invoice was recognised as already held; not written again |
-| `removal` | Invoice body was deleted by an explicit `purge` command |
+| Disclosure | Serialised value | Meaning |
+|---|---|---|
+| `DISK` | `disk` | Invoice body was written to the archive on disk |
+| `MODEL_CONTEXT` | `model_context` | Invoice metadata entered a tool response — the AI model saw it |
+| `DEDUPLICATION_SKIP` | `deduplication_skip` | Invoice was recognised as already held; not written again |
+| `REMOVAL` | `removal` | Invoice body was deleted by an explicit `purge` command |
 
 The `disk` and `model_context` events are deliberately separate. "Twelve files were written" is a different fact from "the chat was shown twelve invoices", and collapsing them loses exactly the distinction that matters in a data access dispute.
 
@@ -93,6 +93,8 @@ Each line is a JSON object. The `schema_version` field is checked on every read.
 }
 ```
 
+The `authorisation_basis` field is one of two fixed values: `ksef_token:<source>` (where `<source>` is `keyring` or `environment`) for all KSeF read operations, or `operator:cli` for purge operations initiated at the terminal — the only operation that reaches no registry and needs no token.
+
 <Info>
 The audit trail records KSeF numbers and metadata — never invoice bodies. A KSeF number uniquely identifies an invoice for the purpose of reconstructing an access event while saying nothing about the counterparty beyond the NIP already stated in the entry. Minimising personal data inside the audit log is intentional: the trail is designed to outlive the invoices it describes.
 </Info>
@@ -117,8 +119,8 @@ ksef-mcp sets permissions at file creation time, not after the fact — a `write
 |---|---|---|
 | `configuration.json` | `0600` | Contains NIP; created owner-only |
 | Invoice archive directory | `0700` | Created owner-only when new; existing directories are left unchanged |
-| Audit trail directory | `0700` | Per NIP, per environment |
-| `audit.jsonl` | `0600` | Created with final mode, never tightened after |
+| Audit trail directory | `0700` | Per NIP, per environment (`AUDIT_DIRECTORY_MODE`) |
+| `audit.jsonl` | `0600` | Created with final mode, never tightened after (`AUDIT_FILE_MODE`) |
 
 <Warning>
 If you point ksef-mcp at an existing directory (for example your home directory), its permissions are left exactly as they are. ksef-mcp only applies `0700` to directories it creates itself. If you want the invoice directory to be private, run `chmod 0700 <path>` manually.
@@ -144,7 +146,7 @@ During `onboarding` and in tool responses that include an invoice directory path
 
 If a match is found, a warning is printed. The operation is not blocked — the warning is informational — but it is printed at the moment the directory is chosen, which is the last moment where the person can change their mind without moving files.
 
-```
+```text
 Uwaga: ścieżka wygląda na synchronizowaną (onedrive).
 Pobrane faktury zawierają dane osobowe kontrahentów.
 ```

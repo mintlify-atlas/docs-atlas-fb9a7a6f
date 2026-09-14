@@ -1,7 +1,7 @@
 ---
-title: "export_period_statement — Monthly Purchase Invoice CSV Export"
-sidebarTitle: "export_period_statement"
-description: "Writes one calendar month of purchase invoices to a semicolon-delimited CSV file with a KOD I verification code per row. Safe to call twice — closed months are cached."
+title: "export_period_statement — Monthly Purchase CSV Export"
+sidebarTitle: "Export Statement"
+description: "Exports purchase invoices for one calendar month as a Polish-format CSV with KOD I verification codes. Closed months cost no API queries on repeat calls."
 ---
 
 `export_period_statement` produces a CSV file containing all purchase invoices (BUYER subject type) for a given calendar month. The file is formatted for Polish accounting software and spreadsheets: semicolon-delimited, comma decimal separator, UTF-8 with a BOM. Each row includes a KOD I verification code — a SHA-256 digest of the archived invoice body combined with the seller NIP and issue date — so an accountant can verify the file's integrity against the Ministry's portal without needing access to the original XML.
