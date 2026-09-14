@@ -1,0 +1,303 @@
+---
+title: "review_new_invoices — New Invoices Since Last Review Session"
+sidebarTitle: "review_new_invoices"
+description: "Reports invoices not yet shown to anyone. Compares the last 90 days against a persistent per-subject ledger. Above 50 new invoices, nothing is marked as reviewed."
+---
+
+`review_new_invoices` answers the question the Ministry's free taxpayer application cannot: not "what invoices exist?", but "what invoices have arrived since a person last looked?". It compares invoice metadata for the last 90 days against a persistent ledger of KSeF numbers that have already been reported, and returns only the delta — the invoices that are genuinely new to the reader.
+
+The ledger is stored on disk per subject type and per environment. It survives server restarts and process termination. An invoice reported as new in one call will not appear again on the next call, unless the above-threshold safeguard prevents it from being marked (see below).
+
+## Why 90 days, not 30
+
+A study of a real taxpayer's purchase invoices found four missing from a manually kept archive. Three were the current month's backlog. The fourth had been assigned its KSeF number on the seventh of July — 215 PLN — and July had already been archived weeks earlier. A 30-day window would have missed it entirely. Ninety days fits under the 100-day ceiling the port enforces, and a full quarter in the study was 38 invoices — well under the 50-invoice threshold.
+
+## Why the window uses KSeF acceptance date
+
+The window is dated by `invoicing_date` (the date KSeF accepted the invoice), not by the seller's issue date. An invoice issued in March and accepted yesterday is new to the reader; a window dated by issue date would not contain it. The `received_on` field per invoice is read directly from the KSeF number itself — the second group of digits in `<NIP>-<YYYYMMDD>-<identifier>-<checksum>` — so it is independent of when this tool happened to fetch anything.
+
+## Agent invocation
+
+```
+Call review_new_invoices
+```
+
+```json
+{
+  "tool": "review_new_invoices",
+  "arguments": {}
+}
+```
+
+## The 50-invoice threshold and the mark-as-reviewed guarantee
+
+Above 50 new invoices for a subject type, the tool does **not** mark any of them as reviewed, and `marked_as_reviewed` is `false`. The rows are dropped from the response without being recorded in the ledger. The next call will report the same invoices again.
+
+This is deliberate: an invoice is only marked as reviewed when a person has seen it individually. Silently marking 200 invoices as "reviewed" because the count exceeded a threshold would create a false record — one that says invoices were shown when they were not.
+
+<Warning>
+  If `marked_as_reviewed` is `false` and `new_count` is above 50, nobody has been shown these invoices. The ledger has not been updated. The next call will repeat them. Consider running `synchronise_invoices` to archive recent packages, then call this tool again once the backlog clears.
+</Warning>
+
+## The earlier_month_count signal
+
+`earlier_month_count` counts new invoices whose KSeF number was assigned before the current calendar month. This is a signal to check, not a tax decision. KSeF has no notion of a closed accounting period — it will accept an invoice for July even if October's VAT return has already been filed. Whether that invoice belongs in July's return, and what follows if it does, is the accountant's decision. This tool names the fact and nothing more.
+
+## Caching
+
+The 90-day window ends at the most recently completed UTC hour, so both bounds are fixed. A repeat call within the same hour is answered from the on-disk period cache at zero API cost. The `from_cache` field on each subject type confirms whether the result came from cache.
+
+## Response model
+
+`review_new_invoices` returns an `InvoiceReviewResult` object.
+
+<ResponseField name="nip" type="string" required>
+  The 10-digit NIP of the authenticated taxpayer.
+</ResponseField>
+
+<ResponseField name="environment" type="string" required>
+  The KSeF environment: `"test"` or `"prod"`.
+</ResponseField>
+
+<ResponseField name="threshold" type="integer" required>
+  The maximum number of new invoices that will be listed individually. Always `50`. Above this, rows are dropped and `marked_as_reviewed` is `false`.
+</ResponseField>
+
+<ResponseField name="period_from" type="string" required>
+  ISO 8601 datetime of the start of the review window (90 days before the hour boundary).
+</ResponseField>
+
+<ResponseField name="period_to" type="string" required>
+  ISO 8601 datetime of the end of the review window (the most recently completed UTC hour). Both ends are always present for this tool — the fixed window is what enables caching.
+</ResponseField>
+
+<ResponseField name="ledger_file" type="string" required>
+  Absolute path to the review ledger file on disk. This JSON file records all KSeF numbers that have been shown to a person, with the date they were received and when they were reviewed. It lives in the data root (never the cache root), so it survives cache clearing.
+</ResponseField>
+
+<ResponseField name="subject_types" type="list[DirectionReviewResult]" required>
+  One entry for each of the four subject types (SELLER, BUYER, THIRD\_SUBJECT, AUTHORIZED\_SUBJECT).
+
+  <Expandable title="DirectionReviewResult fields">
+    <ResponseField name="subject_type" type="string" required>
+      One of `"seller"`, `"buyer"`, `"third_subject"`, `"authorized_subject"`.
+    </ResponseField>
+
+    <ResponseField name="outcome" type="string" required>
+      One of:
+      - `"reported"` — new invoices were found, listed, and recorded in the ledger
+      - `"summarised"` — new invoices were found but count exceeded 50; nothing was recorded
+      - `"nothing_new"` — no invoices arrived since the last review
+      - `"budget_spent"` — the hourly metadata allowance was exhausted before this subject type could be queried
+    </ResponseField>
+
+    <ResponseField name="message" type="string" required>
+      Human-readable summary of the outcome. Always includes a restatement of the exact question (NIP, environment, subject role, period, date type). When the result is `"nothing_new"`, the message restates the question so it can be distinguished from a wrong query. When `earlier_month_count` is above zero, the message names the dates on which those invoices were assigned their KSeF numbers.
+    </ResponseField>
+
+    <ResponseField name="new_invoices" type="list[ReviewedInvoiceRow]" required>
+      Individual invoice rows for invoices that are new since the last review. Present only when `outcome` is `"reported"` (count ≤ 50). Empty list otherwise.
+
+      <Expandable title="ReviewedInvoiceRow fields">
+        <ResponseField name="ksef_number" type="string" required>
+          The KSeF-assigned invoice number.
+        </ResponseField>
+
+        <ResponseField name="seller_invoice_number" type="string" required>
+          The invoice number as assigned by the seller.
+        </ResponseField>
+
+        <ResponseField name="issue_date" type="string" required>
+          The seller's issue date, in ISO 8601 format (`YYYY-MM-DD`).
+        </ResponseField>
+
+        <ResponseField name="seller_nip" type="string" required>
+          The 10-digit NIP of the seller.
+        </ResponseField>
+
+        <ResponseField name="seller_name" type="string | null" required>
+          The legal name of the seller. May be `null`.
+        </ResponseField>
+
+        <ResponseField name="buyer_name" type="string | null" required>
+          The legal name of the buyer. May be `null`.
+        </ResponseField>
+
+        <ResponseField name="gross_amount" type="Decimal" required>
+          Exact gross amount as reported by KSeF.
+        </ResponseField>
+
+        <ResponseField name="net_amount" type="Decimal" required>
+          Exact net amount as reported by KSeF.
+        </ResponseField>
+
+        <ResponseField name="vat_amount" type="Decimal" required>
+          Exact VAT amount as reported by KSeF.
+        </ResponseField>
+
+        <ResponseField name="currency" type="string" required>
+          ISO 4217 currency code.
+        </ResponseField>
+
+        <ResponseField name="received_on" type="string" required>
+          The date KSeF assigned the KSeF number to this invoice, in ISO 8601 format (`YYYY-MM-DD`). Read from the `<YYYYMMDD>` group of the KSeF number itself — independent of when this tool fetched anything, and distinct from the seller's `issue_date`. This is the "date of receipt" in KSeF.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="new_count" type="integer" required>
+      Total count of invoices that are new since the last review for this subject type. Present regardless of whether individual rows are listed.
+    </ResponseField>
+
+    <ResponseField name="earlier_month_count" type="integer" required>
+      Count of new invoices whose KSeF number was assigned before the current calendar month. A non-zero value is a signal to check whether those months are already closed for tax purposes. The tool makes no tax decision and issues no warning about filing — that judgement belongs to the accountant.
+    </ResponseField>
+
+    <ResponseField name="gross_totals" type="list[GrossTotal]" required>
+      Gross totals for new invoices only, grouped by currency.
+
+      <Expandable title="GrossTotal fields">
+        <ResponseField name="currency" type="string" required>
+          ISO 4217 currency code.
+        </ResponseField>
+        <ResponseField name="gross" type="Decimal" required>
+          Sum of gross amounts for new invoices in this currency.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="complete" type="boolean" required>
+      `true` if KSeF returned the full 90-day window in one response. `false` means the API had more results than fit in a single page, and the review is incomplete. When `false`, the `"nothing_new"` outcome cannot be trusted.
+    </ResponseField>
+
+    <ResponseField name="marked_as_reviewed" type="boolean" required>
+      `true` if the new invoices in this direction were recorded in the ledger and will not appear again on the next call. `false` either because `outcome` is `"nothing_new"` / `"budget_spent"`, or because `new_count` exceeded the 50-invoice threshold (rows were dropped and nobody was shown them).
+    </ResponseField>
+
+    <ResponseField name="queried_at" type="string | null" required>
+      ISO 8601 datetime when the KSeF API was called. `null` when `outcome` is `"budget_spent"`.
+    </ResponseField>
+
+    <ResponseField name="from_cache" type="boolean" required>
+      `true` if the metadata came from the on-disk period cache. A cached call costs zero metadata queries.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example response
+
+<CodeGroup>
+```json New invoices found and marked
+{
+  "nip": "1234567890",
+  "environment": "prod",
+  "threshold": 50,
+  "period_from": "2025-03-17T13:00:00+00:00",
+  "period_to": "2025-06-15T13:00:00+00:00",
+  "ledger_file": "/home/user/.local/share/ksef-mcp/subjects/1234567890/prod/review.json",
+  "subject_types": [
+    {
+      "subject_type": "buyer",
+      "outcome": "reported",
+      "message": "2 faktury od ostatniego przeglądu, brutto 4920,00 PLN. Zapisuję je jako pokazane.",
+      "new_invoices": [
+        {
+          "ksef_number": "9876543210-20250610-ABCDEFGHIJKL-MN",
+          "seller_invoice_number": "FV/2025/06/042",
+          "issue_date": "2025-06-10",
+          "seller_nip": "9876543210",
+          "seller_name": "Dostawca Sp. z o.o.",
+          "buyer_name": "Nabywca S.A.",
+          "gross_amount": "2460.00",
+          "net_amount": "2000.00",
+          "vat_amount": "460.00",
+          "currency": "PLN",
+          "received_on": "2025-06-10"
+        }
+      ],
+      "new_count": 2,
+      "earlier_month_count": 0,
+      "gross_totals": [{ "currency": "PLN", "gross": "4920.00" }],
+      "complete": true,
+      "marked_as_reviewed": true,
+      "queried_at": "2025-06-15T13:04:17+00:00",
+      "from_cache": false
+    }
+  ]
+}
+```
+
+```json Earlier-month invoices flagged
+{
+  "nip": "1234567890",
+  "environment": "prod",
+  "threshold": 50,
+  "period_from": "2025-03-17T13:00:00+00:00",
+  "period_to": "2025-06-15T13:00:00+00:00",
+  "ledger_file": "/home/user/.local/share/ksef-mcp/subjects/1234567890/prod/review.json",
+  "subject_types": [
+    {
+      "subject_type": "buyer",
+      "outcome": "reported",
+      "message": "3 faktury od ostatniego przeglądu, brutto 7380,00 PLN. 1 z tego dostało numer KSeF przed bieżącym miesiącem (2025-04-07). Sprawdź, czy te okresy nie są już rozliczone.",
+      "new_invoices": [
+        {
+          "ksef_number": "9876543210-20250407-XYZXYZXYZXYZ-AB",
+          "seller_invoice_number": "FV/2025/04/011",
+          "issue_date": "2025-04-05",
+          "seller_nip": "9876543210",
+          "seller_name": "Dostawca Sp. z o.o.",
+          "buyer_name": "Nabywca S.A.",
+          "gross_amount": "215.00",
+          "net_amount": "174.80",
+          "vat_amount": "40.20",
+          "currency": "PLN",
+          "received_on": "2025-04-07"
+        }
+      ],
+      "new_count": 3,
+      "earlier_month_count": 1,
+      "gross_totals": [{ "currency": "PLN", "gross": "7380.00" }],
+      "complete": true,
+      "marked_as_reviewed": true,
+      "queried_at": "2025-06-15T13:04:17+00:00",
+      "from_cache": false
+    }
+  ]
+}
+```
+
+```json Nothing new
+{
+  "nip": "1234567890",
+  "environment": "prod",
+  "threshold": 50,
+  "period_from": "2025-03-17T13:00:00+00:00",
+  "period_to": "2025-06-15T13:00:00+00:00",
+  "ledger_file": "/home/user/.local/share/ksef-mcp/subjects/1234567890/prod/review.json",
+  "subject_types": [
+    {
+      "subject_type": "buyer",
+      "outcome": "nothing_new",
+      "message": "Nic nowego od ostatniego przeglądu. Pytanie brzmiało — NIP 1234567890, środowisko prod, rola podmiotu: nabywca, okres od 2025-03-17T13:00:00+00:00 do 2025-06-15T13:00:00+00:00 wg data przyjęcia w KSeF.",
+      "new_invoices": [],
+      "new_count": 0,
+      "earlier_month_count": 0,
+      "gross_totals": [],
+      "complete": true,
+      "marked_as_reviewed": false,
+      "queried_at": "2025-06-15T13:04:17+00:00",
+      "from_cache": true
+    }
+  ]
+}
+```
+</CodeGroup>
+
+## Audit trail
+
+For each subject type, one `model_context` disclosure entry is appended to the audit trail. The entry records the KSeF numbers of the invoices that were shown as new. When `outcome` is `"summarised"` (above the threshold), the count is recorded with no individual numbers — which accurately reflects what happened: nobody saw them individually.
+
+<Tip>
+  `received_on` and `issue_date` are different facts. `received_on` is when KSeF accepted the invoice (read from the KSeF number). `issue_date` is the date the seller chose. An invoice issued in February may have `received_on` in June if the seller was late submitting it to KSeF.
+</Tip>

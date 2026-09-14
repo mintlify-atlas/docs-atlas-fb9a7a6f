@@ -1,0 +1,153 @@
+---
+title: "Configure ksef-mcp: NIP, environment, and token storage"
+sidebarTitle: "Configuration"
+description: "Reference for ksef-mcp's configuration file — where it lives on each platform, all four fields, file permissions, and how to update settings safely."
+---
+
+ksef-mcp stores its settings in a single JSON file created during `onboarding`. The file is written with restrictive permissions so that your NIP and environment choice are not readable by other accounts on the same machine. Your KSeF token is **never** stored in this file — it lives in the system keyring.
+
+<Warning>
+  Never put your KSeF token in `configuration.json` or in your MCP client's
+  config file (`.mcp.json`, `claude_desktop_config.json`). Those files are
+  plain text on disk and may be synced, backed up, or accidentally committed to
+  version control. Tokens belong exclusively in the system keyring or in the
+  `KSEF_TOKEN` environment variable for headless machines.
+</Warning>
+
+## Config file location
+
+The file path is computed at runtime by `platformdirs.user_data_path(appname="ksef-mcp")` followed by `configuration.json`. On each platform this resolves to:
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.local/share/ksef-mcp/configuration.json` |
+| macOS | `~/Library/Application Support/ksef-mcp/configuration.json` |
+| Windows | `%LOCALAPPDATA%\ksef-mcp\configuration.json` |
+
+The parent directory is created automatically if it does not exist. The file itself is created with mode **`0600`** (owner read/write only) in a single atomic operation — there is no window during which the file exists with broader permissions.
+
+## Configuration fields
+
+<ParamField body="nip" type="string" required>
+  Your 10-digit Polish taxpayer identifier (Numer Identyfikacji Podatkowej).
+  This is the NIP of the entity whose invoices you are accessing. The keyring
+  uses this value as the account name when storing and retrieving your token, so
+  changing it here without updating the keyring entry will cause `verify` and
+  all MCP tools to report a missing token.
+</ParamField>
+
+<ParamField body="environment" type="string" required>
+  Which KSeF registry the server talks to. Accepted values:
+
+  | Value | Description |
+  |---|---|
+  | `test` | The Ministry's test registry. **Default.** Rate limits are roughly ten times higher than production. |
+  | `demo` | A demonstration environment provided by the Ministry. |
+  | `production` | The live national registry. Requires deliberate opt-in during onboarding. |
+
+  The default is `test`. Switching to `production` is a one-time choice you
+  make by answering the onboarding prompt — it is never assumed automatically.
+</ParamField>
+
+<ParamField body="keyring_backend" type="string" required>
+  The Python module name of the keyring backend that holds your token (for
+  example `keyring.backends.SecretService.Keyring` on Linux). This is recorded
+  so that the server always reads from the same backend you chose during
+  onboarding — an unrelated package installing its own backend with a higher
+  priority would otherwise silently change the winner, making an existing token
+  invisible without deleting it.
+
+  The available backends on your machine are listed during `onboarding`. If only
+  one backend is present, it is selected automatically.
+</ParamField>
+
+<ParamField body="invoice_directory" type="string" required>
+  Absolute path to the directory where downloaded invoice XML files are stored.
+  Defaults to `~/ksef/<NIP>/` during onboarding.
+
+  - If the directory is **new**, it is created with mode `0700` (owner only).
+  - If the directory **already exists**, its permissions are left unchanged. If
+    you want it private, run `chmod 0700 /path/to/directory` manually.
+  - If the path contains a substring associated with a cloud sync client (see
+    below), `onboarding` prints a warning but does not block the choice.
+</ParamField>
+
+## Example configuration.json
+
+```json
+{
+  "nip": "1234567890",
+  "environment": "test",
+  "keyring_backend": "keyring.backends.SecretService.Keyring",
+  "invoice_directory": "/home/alice/ksef/1234567890"
+}
+```
+
+## Cloud sync warning
+
+Invoice XML files contain your counterparty's personal data (company names, addresses, NIP numbers). If `invoice_directory` is inside a folder mirrored by a desktop sync client, those files will be uploaded to a third-party server without an explicit consent step.
+
+ksef-mcp detects the following path substrings (case-insensitive) and prints a warning during onboarding:
+
+| Detected substring | Associated service |
+|---|---|
+| `dropbox` | Dropbox |
+| `google drive`, `googledrive`, `gdrive` | Google Drive |
+| `onedrive` | Microsoft OneDrive |
+| `icloud` | Apple iCloud |
+| `nextcloud` | Nextcloud |
+| `pcloud` | pCloud |
+| `mega` | MEGA |
+| `yandex.disk` | Yandex Disk |
+
+The warning is advisory. ksef-mcp does not refuse to use a synced directory, because the decision to opt in to a cloud provider is yours to make knowingly — it is just not made silently.
+
+## Updating your configuration
+
+Re-run `onboarding` at any time:
+
+```bash
+uvx ksef-mcp onboarding
+```
+
+The wizard reads your existing `configuration.json` and presents each current value as the default. Press **Enter** to keep a value or type a new one. Only the fields you change are updated; the file is rewritten atomically with `0600` permissions.
+
+If you need to update only the stored token without touching any other settings, use `token set` directly:
+
+```bash
+uvx ksef-mcp token set --nip 1234567890
+```
+
+## Token storage details
+
+The KSeF token is stored separately from `configuration.json`, in the system keyring under the service name `ksef-mcp` and the account name equal to your NIP. ksef-mcp reads it back immediately after writing to verify the write succeeded — because a KSeF token is displayed only once in the portal and cannot be retrieved again.
+
+On machines without a system keyring (headless servers, WSL, containers), set the `KSEF_TOKEN` environment variable instead:
+
+```bash
+export KSEF_TOKEN="your-ksef-token-here"
+```
+
+When `KSEF_TOKEN` is set, it takes priority over the keyring on every read. The `token status` command reports which source is active:
+
+```bash
+uvx ksef-mcp token status --nip 1234567890
+```
+
+If the keyring collection is **locked** (after machine sleep or a keyring timeout), every command that touches the token exits immediately with an explanation. It does not open an unlock prompt — doing so would hang the MCP stdio transport. Unlock the collection in your desktop session, or switch to the `KSEF_TOKEN` fallback.
+
+## Checking configuration health
+
+`doctor` verifies all prerequisites without calling KSeF and without spending any query budget:
+
+```bash
+uvx ksef-mcp doctor
+```
+
+It reports:
+
+- Keyring availability and which backends are present
+- Whether the keyring collection is locked
+- Node.js version (relevant once PDF export ships)
+
+Use `doctor` after changing machines or updating system packages to confirm the environment is still intact before running `verify`.

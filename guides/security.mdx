@@ -1,0 +1,154 @@
+---
+title: "Security Model and Data Handling in ksef-mcp"
+sidebarTitle: "Security"
+description: "How ksef-mcp protects KSeF tokens, invoice bodies, and audit evidence — from keyring storage to file permissions and cloud sync detection."
+---
+
+ksef-mcp is designed around one guiding principle: invoice XML contains counterparty personal data, and every boundary it crosses must be intentional and recorded. This page explains each layer of that design — where tokens live, what the audit trail captures, why invoice bodies never enter tool responses, and how the system handles the common failure modes that could expose credentials or data.
+
+## Token storage
+
+KSeF tokens are stored in the **system keyring** — macOS Keychain, GNOME Keyring / Secret Service on Linux, or Windows Credential Store on Windows. The token never appears in `configuration.json`, never in process arguments, and never in MCP tool responses.
+
+`configuration.json` stores only non-secret metadata: the NIP, the chosen environment, the keyring backend name, and the invoice directory path.
+
+```json
+{
+  "nip": "1234567890",
+  "environment": "test",
+  "keyring_backend": "keyring.backends.SecretService",
+  "invoice_directory": "/home/alice/ksef/1234567890"
+}
+```
+
+<Note>
+The `KSEF_TOKEN` environment variable is the documented fallback for headless machines, WSL, and containers where no keyring backend exists. When set, it takes precedence over the keyring on every token read. See [Headless & WSL](/guides/headless-and-wsl) for the full setup guide.
+</Note>
+
+### Keyring lock detection
+
+Before every single token access — not once at startup — ksef-mcp reads the D-Bus property that reports whether the Secret Service collection is locked. If the collection is locked (for example, after machine sleep or the store's own idle timeout), ksef-mcp raises an error immediately instead of calling `keyring.get_password()`.
+
+This matters because `keyring.get_password()` on a locked collection opens an unlock prompt. On the MCP stdio transport there is nowhere to display that prompt: it hangs the connection and the agent waiting on the other end. The lock check is the safeguard against that.
+
+```
+The system keyring collection is locked, so nothing was read or written:
+asking the keyring would open an unlock prompt and hang the MCP
+transport. Unlock the collection in your desktop session, or export
+KSEF_TOKEN as the documented fallback.
+```
+
+Run `ksef-mcp doctor` to inspect the keyring and collection lock state without touching KSeF or spending any API budget.
+
+---
+
+## Audit trail
+
+Every invoice read — whether an invoice is written to disk, shown to an AI model, recognised as a duplicate, or deleted — is appended to a JSONL file at:
+
+```
+<user_data_path>/ksef-mcp/subjects/<NIP>/<environment>/audit.jsonl
+```
+
+The file is created with mode `0600`. Its parent directory is created with mode `0700`. Lines are appended with `O_APPEND` (a single `write()` on an `O_APPEND` descriptor is indivisible against concurrent appenders) and `fsync`-ed after each write. The file is never truncated or rewritten.
+
+### Four disclosure types
+
+Each entry carries one of four `disclosure` values that distinguish what happened to the invoice:
+
+| Disclosure | Meaning |
+|---|---|
+| `disk` | Invoice body was written to the archive on disk |
+| `model_context` | Invoice metadata entered a tool response — the AI model saw it |
+| `deduplication_skip` | Invoice was recognised as already held; not written again |
+| `removal` | Invoice body was deleted by an explicit `purge` command |
+
+The `disk` and `model_context` events are deliberately separate. "Twelve files were written" is a different fact from "the chat was shown twelve invoices", and collapsing them loses exactly the distinction that matters in a data access dispute.
+
+`removal` is the fourth answer to the question "where did the content go?" and the only one pointing the other direction: the bodies ceased to exist, and nobody was shown anything. It is recorded in the audit trail even though there is nothing to show — a purge that left no trace would be indistinguishable from a purge that never happened.
+
+### Entry schema
+
+Each line is a JSON object. The `schema_version` field is checked on every read. An unrecognised version raises `AuditTrailUnreadable` and is refused — never guessed at. A misread trail either invents an access that never happened or hides one that did, and both outcomes are worse than admitting the file cannot be read.
+
+```json
+{
+  "schema_version": 1,
+  "recorded_at": "2025-01-15T10:23:41.123456+00:00",
+  "operation": "synchronise_invoices",
+  "nip": "1234567890",
+  "environment": "test",
+  "authorisation_basis": "ksef_token:keyring",
+  "disclosure": "disk",
+  "subject_role": "buyer",
+  "criteria": "permanent_storage 2025-01-01T00:00:00+00:00..",
+  "document_count": 3,
+  "ksef_numbers": [
+    "1234567890-20250110-ABCDEFGHIJ12-AB",
+    "1234567890-20250112-BCDEFGHIJK23-BC",
+    "1234567890-20250114-CDEFGHIJKL34-CD"
+  ],
+  "output_path": "/home/alice/ksef/1234567890",
+  "formats": ["xml"]
+}
+```
+
+<Info>
+The audit trail records KSeF numbers and metadata — never invoice bodies. A KSeF number uniquely identifies an invoice for the purpose of reconstructing an access event while saying nothing about the counterparty beyond the NIP already stated in the entry. Minimising personal data inside the audit log is intentional: the trail is designed to outlive the invoices it describes.
+</Info>
+
+The trail lives in the **data** directory (`user_data_path`), never in the cache directory. A disk cleaner that honours the cache convention would delete the evidence; the data path is protected from that.
+
+---
+
+## Invoice body isolation
+
+FA(2) and FA(3) XML bodies contain counterparty personal data — names, addresses, and tax identifiers. This data never crosses the MCP tool boundary. Every tool response contains paths and metadata (KSeF numbers, counts, dates, amounts) only.
+
+The `InvoiceMetadata` type captures the eight columns needed for accounting review: KSeF number, seller invoice number, issue date, seller NIP, seller name, buyer name, gross/net/VAT amounts, and currency. The XML body that produced those fields is not part of the struct and is never serialised into a tool response.
+
+---
+
+## File permissions
+
+ksef-mcp sets permissions at file creation time, not after the fact — a `write` followed by `chmod` leaves a window where the file is readable by other local accounts.
+
+| Path | Mode | Notes |
+|---|---|---|
+| `configuration.json` | `0600` | Contains NIP; created owner-only |
+| Invoice archive directory | `0700` | Created owner-only when new; existing directories are left unchanged |
+| Audit trail directory | `0700` | Per NIP, per environment |
+| `audit.jsonl` | `0600` | Created with final mode, never tightened after |
+
+<Warning>
+If you point ksef-mcp at an existing directory (for example your home directory), its permissions are left exactly as they are. ksef-mcp only applies `0700` to directories it creates itself. If you want the invoice directory to be private, run `chmod 0700 <path>` manually.
+</Warning>
+
+---
+
+## AES-256-CBC decryption
+
+Export packages from KSeF are AES-256-CBC encrypted. The key and initialisation vector are generated at export initialisation and held in the sync state file only for as long as the package is in flight. Once the package is decrypted and archived, the key is discarded — it is not retained alongside the invoice XML.
+
+A key that outlives the export it belongs to is explicitly forbidden by the design (ADR-105): the sync state record marks the key as `None` after archiving, and any attempt to resume an archived export with a non-existent key is treated as a failure rather than a re-download.
+
+---
+
+## Cloud sync detection
+
+Invoice XML contains counterparty personal data. Placing the invoice archive inside a directory that a cloud sync client mirrors to a remote server is a data disclosure the user must opt into knowingly.
+
+During `onboarding` and in tool responses that include an invoice directory path, ksef-mcp checks whether the path contains any of these substrings (case-insensitive):
+
+`dropbox`, `google drive`, `googledrive`, `gdrive`, `onedrive`, `icloud`, `nextcloud`, `pcloud`, `mega`, `yandex.disk`
+
+If a match is found, a warning is printed. The operation is not blocked — the warning is informational — but it is printed at the moment the directory is chosen, which is the last moment where the person can change their mind without moving files.
+
+```
+Uwaga: ścieżka wygląda na synchronizowaną (onedrive).
+Pobrane faktury zawierają dane osobowe kontrahentów.
+```
+
+<Warning>
+Storing invoice XML in a cloud-synced directory may constitute a personal data disclosure under GDPR, depending on the sync provider's data processing terms. ksef-mcp warns but does not prevent this configuration — the decision belongs to the operator.
+</Warning>

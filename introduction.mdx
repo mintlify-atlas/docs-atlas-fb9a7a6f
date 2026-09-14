@@ -1,0 +1,90 @@
+---
+title: "ksef-mcp: Local MCP Server for KSeF e-Invoicing"
+sidebarTitle: "Introduction"
+description: "ksef-mcp connects AI agents to Poland's national e-invoicing registry (KSeF) via a local MCP server — your invoice data never leaves your machine."
+---
+
+ksef-mcp is a local [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI agents (Claude, Cursor, and any MCP-compatible client) structured access to [KSeF](https://www.podatki.gov.pl/ksef/) — Poland's national e-invoicing system operated by the Ministry of Finance. Because the server runs on your own machine and communicates over stdio, invoice XML and authentication tokens never pass through a third-party service.
+
+The project is built in Python, published to PyPI as `ksef-mcp`, and started with a single command:
+
+```bash
+uvx ksef-mcp
+```
+
+<Note>
+  **Early-stage project.** The package, onboarding workflow, and diagnostic
+  tools are fully operational. Invoice search and download are planned but not
+  yet implemented. Everything marked 🚧 below is a declared roadmap item, not a
+  shipping feature.
+</Note>
+
+## Feature status
+
+| Area | Status |
+|---|---|
+| Package · `uvx` distribution · test suite | ✅ Working |
+| Configuration: `onboarding`, `doctor`, `token` | ✅ Working |
+| Connection verification: `verify` | ✅ Working |
+| Invoice search and download | 🚧 Planned |
+| PDF visualisation | 🚧 Planned |
+
+## What ksef-mcp does
+
+The MVP scope is intentionally narrow: **find invoices for a given month and download them.** The roadmap progresses in three phases:
+
+1. **Phase 1 — Purchase invoices, single entity, read-only.** Sync, archive, list, and export purchase invoices for one taxpayer (NIP).
+2. **Phase 2 — Sales invoices.** Same entity, outgoing direction.
+3. **Phase 3 — Accounting offices.** Multi-entity support with subject switching.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Runs locally" icon="house-lock">
+    The server process lives on your machine. Invoice XML and your KSeF token
+    are never sent to an intermediary.
+  </Card>
+  <Card title="Keyring-backed token storage" icon="key">
+    Credentials are stored in the system keyring (Keychain on macOS, Secret
+    Service on Linux, Credential Manager on Windows), not in plain-text config
+    files.
+  </Card>
+  <Card title="Audit trail" icon="file-lines">
+    Every read operation — synchronisation, listing, export, review — is
+    recorded in a per-entity audit log so you always know what data reached the
+    model context.
+  </Card>
+  <Card title="Deduplication and safe purge" icon="shield-check">
+    A local deduplication index prevents double-downloads. The `purge` command
+    removes invoice files while keeping the index intact, so re-sync never
+    re-fetches purged invoices.
+  </Card>
+  <Card title="Rate-limit aware" icon="gauge">
+    Every KSeF call respects the Ministry's hourly query budget. The server
+    never retries automatically after a rate-limit refusal — it reports the
+    `Retry-After` value and waits for you to decide.
+  </Card>
+  <Card title="Claude Code skill" icon="robot">
+    `skill install` writes a SKILL.md file that teaches Claude Code how and when
+    to use the ksef-mcp tools correctly, including which tools spend budget and
+    which are free.
+  </Card>
+</CardGroup>
+
+## What is out of scope
+
+ksef-mcp deliberately does not cover:
+
+- **Sending or issuing invoices** — outgoing invoice submission is not planned in any current phase.
+- **Invoice corrections** — corrective notes and credit memos are not in scope.
+- **Permission management** — creating, rotating, or revoking KSeF API tokens through the server is not supported.
+
+These omissions are intentional architectural decisions, not forgotten features.
+
+## Who this is for
+
+ksef-mcp targets **technical users** comfortable with a terminal, a package manager, and manual editing of JSON config files. There is no GUI installer. Distribution aimed at non-technical users (a desktop installer or a client-side extension) is a separate, future effort.
+
+## License
+
+ksef-mcp is released under **AGPL-3.0-only**. The planned PDF visualisation component uses the Ministry of Finance's official generator (`@akmf/ksef-fe-invoice-converter`), which carries its own **MIT** licence and will be vendored separately under `src/ksef_mcp/vendor/`.

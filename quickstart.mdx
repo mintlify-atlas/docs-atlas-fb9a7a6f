@@ -1,47 +1,170 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with ksef-mcp in 4 steps"
+sidebarTitle: "Quickstart"
+description: "Install ksef-mcp, run interactive onboarding, register the server with your MCP client, and verify a live connection to KSeF in under ten minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you from zero to a working ksef-mcp connection. By the end you will have the server configured, registered with your MCP client, and confirmed against the KSeF API. The whole process takes a single terminal session and one JSON edit.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+<Note>
+  ksef-mcp defaults to the **TEST** environment. The test registry is completely
+  separate from the live Polish tax system — no real invoices are touched until
+  you explicitly opt in to `production` during onboarding or by editing your
+  configuration.
+</Note>
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+### Install prerequisites
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+ksef-mcp requires **Python 3.13** (pinned exactly) and the **uv** package manager. You do not need to install Python manually — `uv` and `uvx` fetch the correct interpreter automatically.
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+Install `uv` if you do not have it:
+
+<CodeGroup>
+```bash macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+```powershell Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+</CodeGroup>
+
+Verify the installation:
+
+```bash
+uvx --version
+```
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+  On headless machines (WSL, containers, CI) the system keyring may be
+  unavailable. In that case, set the `KSEF_TOKEN` environment variable as a
+  fallback — it takes priority over the keyring on every read. The `token
+  status` command will tell you which source is active.
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  ```bash
+  export KSEF_TOKEN="your-ksef-token-here"
+  ```
 </Tip>
+
+### Run onboarding
+
+The `onboarding` command is an interactive wizard that checks prerequisites, collects all required settings, stores your token in the system keyring, and writes `configuration.json`. Run it before starting the MCP server for the first time.
+
+```bash
+uvx ksef-mcp onboarding
+```
+
+The wizard walks you through the following in order:
+
+1. **Preflight checks** — verifies keyring availability and reports any issues (locked collection, missing backend, headless environment).
+2. **NIP** — your 10-digit Polish taxpayer identifier.
+3. **Keyring backend** — if more than one backend is available, you choose which one stores the token; an accidental backend change would make an existing token invisible without deleting it.
+4. **Environment** — `test`, `demo`, or `production`. The default is `test`.
+5. **KSeF token** — the wizard prints the portal URL (`https://ap.ksef.mf.gov.pl/web/tokens/generate-token`) and prompts for your token with no echo. You must generate the token yourself using a qualified electronic signature or Trusted Profile (Profil Zaufany); this step cannot be automated. The `InvoiceRead` permission is sufficient for all current features.
+6. **Invoice directory** — where downloaded invoices are stored locally. Defaults to `~/ksef/<NIP>/`. Created with `0700` permissions if new.
+
+After onboarding completes, the configuration is saved and the wizard prints a summary. It deliberately does **not** call KSeF at the end — use `verify` (step 4) when you are ready to spend a query from your hourly budget.
+
+<Note>
+  You can re-run `onboarding` at any time to update individual settings. It
+  reads existing values and uses them as defaults, so you only need to re-enter
+  what has changed.
+</Note>
+
+### Register with your MCP client
+
+The MCP server communicates over stdio and is launched by your client, not run manually. Add the following to your client's MCP configuration file.
+
+<CodeGroup>
+```json .mcp.json / claude_desktop_config.json
+{
+  "mcpServers": {
+    "ksef": {
+      "command": "uvx",
+      "args": ["ksef-mcp"]
+    }
+  }
+}
+```
+
+```json Local development build
+{
+  "mcpServers": {
+    "ksef": {
+      "command": "uvx",
+      "args": ["--from", "/path/to/local/ksef-mcp", "ksef-mcp"]
+    }
+  }
+}
+```
+</CodeGroup>
+
+For **Claude Desktop**, the config file is at:
+
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/claude/claude_desktop_config.json` |
+
+For **Claude Code** (CLI), `.mcp.json` lives in your project root or home directory depending on scope.
+
+After saving the file, restart your MCP client so it picks up the new server entry.
+
+### Verify the connection
+
+`verify` is a separate command from onboarding because every KSeF call spends from your hourly query budget. Run it deliberately, once you are satisfied with your configuration.
+
+```bash
+uvx ksef-mcp verify
+```
+
+A successful response looks like this:
+
+```bash
+Querying KSeF (test) as 1234567890…
+Token source: system keyring
+Connected — you are authenticated as Acme Sp. z o.o.
+Environment: test
+
+Recent purchase invoices (3):
+  2024-11-15    12,300.00 PLN  Supplier A Sp. z o.o.
+  2024-11-08     4,920.50 PLN  Supplier B S.A.
+  2024-11-02       890.00 EUR  Supplier C GmbH
+```
+
+An empty invoice list is not an error — it means no purchase invoices arrived in the last 30 days in the configured environment. The connection is confirmed either way.
+
+If KSeF refuses with a rate limit, `verify` prints the `Retry-After` interval and exits without retrying. Wait the indicated time and run it again.
+
+### Install the Claude Code skill (optional)
+
+The skill teaches Claude Code how and when to use each ksef-mcp tool — which ones spend budget, which are cached, and what must never be done (such as reading invoice XML into the model context).
+
+```bash
+# Install for your user account (~/.claude/skills/ksef-mcp/)
+uvx ksef-mcp skill install --scope user
+
+# Install for the current project only (./.claude/skills/ksef-mcp/)
+uvx ksef-mcp skill install --scope project
+```
+
+The `--scope` flag is required. If a skill is already installed and differs from the current version, the command shows a diff and asks before overwriting — existing edits are never silently discarded.
+
+</Steps>
+
+## Available CLI commands
+
+| Command | What it does | Calls KSeF |
+|---|---|---|
+| `ksef-mcp` | Starts the MCP server on stdio | No |
+| `ksef-mcp onboarding` | Interactive first-run configuration | No |
+| `ksef-mcp doctor` | Checks prerequisites only | No |
+| `ksef-mcp token set --nip NIP` | Stores a token in the keyring | No |
+| `ksef-mcp token delete --nip NIP` | Removes a token from the keyring | No |
+| `ksef-mcp token status --nip NIP` | Reports token presence without revealing it | No |
+| `ksef-mcp skill install --scope user\|project` | Installs or updates the Claude Code skill | No |
+| `ksef-mcp purge` | Deletes invoice files while preserving the dedup index | No |
+| `ksef-mcp verify` | Confirms the connection and shows recent invoices | **Yes** |

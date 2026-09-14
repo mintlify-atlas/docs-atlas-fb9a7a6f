@@ -1,0 +1,175 @@
+---
+title: "Running ksef-mcp on Headless Servers, WSL, and Containers"
+sidebarTitle: "Headless & WSL"
+description: "How to configure ksef-mcp when no system keyring is available — the KSEF_TOKEN environment variable fallback, its caveats, and locked-keyring recovery for desktop systems."
+---
+
+ksef-mcp stores KSeF tokens in the system keyring by default. On headless Linux servers, WSL instances, and containers there is typically no keyring backend available — `ksef-mcp onboarding` detects this and exits immediately rather than proceeding to a state where token storage will silently fail. This page covers the `KSEF_TOKEN` environment variable fallback, its known caveats, and how to handle the related post-sleep locked-keyring scenario on desktop systems.
+
+## The problem: no keyring backend
+
+When ksef-mcp runs `onboarding`, the first thing it checks is whether a usable keyring backend exists. On headless systems — SSH sessions, WSL without a running Secret Service, Docker containers — none of the selectable backends (`keyring.backends.SecretService`, `keyring.backends.macOS`, `keyring.backends.Windows`) will be present.
+
+If no usable backend is found, `onboarding` exits with code `1` and prints:
+
+```
+Bez magazynu nie zapiszę tokenu i nie zapytam o hasło —
+interaktywny prompt zawiesiłby transport MCP. Przerywam.
+```
+
+This is intentional. An interactive password prompt inside the MCP stdio transport would hang the connection. ksef-mcp refuses to proceed rather than enter that state.
+
+## The fallback: KSEF_TOKEN environment variable
+
+The `KSEF_TOKEN` environment variable is the documented escape path. When set, it takes precedence over the keyring on every token read. You can use it on any machine — headless, WSL, container, or desktop — and it requires no keyring setup at all.
+
+<Steps>
+  <Step title="Export the environment variable">
+    Set `KSEF_TOKEN` in the shell session that will run or launch the MCP server:
+
+    ```bash
+    export KSEF_TOKEN=your-ksef-token-here
+    ```
+
+    Confirm the token is visible to ksef-mcp:
+
+    ```bash
+    uvx ksef-mcp token status --nip 1234567890
+    ```
+
+    The output will say:
+
+    ```
+    Token dla 1234567890 pochodzi z zmiennej KSEF_TOKEN: ...
+    ```
+  </Step>
+  <Step title="Run onboarding">
+    Run `ksef-mcp onboarding` to write `configuration.json`. Onboarding will detect that no keyring backend is available and exit with code `1` before asking for the token — this is expected. You can still create `configuration.json` manually, or run onboarding on a machine that has a keyring and copy the resulting file.
+
+    <Note>
+    `configuration.json` contains no secrets. It stores only the NIP, the chosen environment, the keyring backend name, and the invoice directory path. You can create or edit it directly — see the [Security](/guides/security) page for the schema.
+    </Note>
+  </Step>
+  <Step title="Verify the connection">
+    With `KSEF_TOKEN` set and `configuration.json` in place, verify the connection:
+
+    ```bash
+    uvx ksef-mcp verify
+    ```
+
+    ksef-mcp will note that the token source is the environment variable and warn that it cannot confirm the token belongs to the configured NIP:
+
+    ```
+    Token pochodzi z: zmiennej KSEF_TOKEN
+      Zmienna nie jest przypisana do NIP-u, więc nie gwarantuję, że
+      należy do 1234567890.
+    ```
+  </Step>
+  <Step title="Pass the variable to your MCP client">
+    Configure your MCP client to pass `KSEF_TOKEN` into the server process. For Claude Desktop or any client that uses a JSON config:
+
+    <CodeGroup>
+      ```json Claude Desktop / .mcp.json
+      {
+        "mcpServers": {
+          "ksef": {
+            "command": "uvx",
+            "args": ["ksef-mcp"],
+            "env": {
+              "KSEF_TOKEN": "your-ksef-token-here"
+            }
+          }
+        }
+      }
+      ```
+
+      ```bash Docker
+      docker run \
+        -e KSEF_TOKEN=your-ksef-token-here \
+        -v /path/to/invoices:/invoices \
+        your-ksef-mcp-image
+      ```
+
+      ```bash Shell export
+      export KSEF_TOKEN=your-ksef-token-here
+      uvx ksef-mcp
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Caveats
+
+<Warning>
+`KSEF_TOKEN` is **not NIP-scoped**. If you have multiple subjects configured, every subject will resolve to the same token. `ksef-mcp verify` will warn about this explicitly. Make sure the token you export belongs to the NIP configured in `configuration.json`.
+</Warning>
+
+### Multiple subjects
+
+The environment variable is a single value with no NIP attached. The token_store source code is explicit about this:
+
+> It is deliberately NOT keyed by NIP — a shell has one of it — so with two subjects configured both resolve to the same token. Callers that know which subject they meant say so out loud.
+
+If you manage invoices for more than one NIP, the keyring is the correct solution because it stores one token per NIP. The environment variable is an escape hatch for single-subject deployments on machines without a keyring.
+
+### Process environment visibility
+
+The value of `KSEF_TOKEN` is visible in the process environment. Avoid configurations that log all environment variables (for example, certain CI runners, Docker log drivers, or system audit tools configured for process monitoring). A KSeF token that appears in a log is a credential exposure.
+
+### Token deletion and the environment variable
+
+`ksef-mcp token delete --nip <NIP>` removes the token entry from the keyring. It does **not** unset `KSEF_TOKEN`. If the variable is still exported after you run `token delete`, the token remains active.
+
+ksef-mcp warns about this explicitly:
+
+```
+UWAGA: zmienna KSEF_TOKEN jest nadal ustawiona i ma pierwszeństwo,
+więc token wciąż działa.
+Wycofaj go z sesji: unset KSEF_TOKEN
+```
+
+To fully deactivate a token on a headless system, you must both revoke it in the KSeF portal and ensure `KSEF_TOKEN` is unset in all active sessions.
+
+---
+
+## WSL-specific notes
+
+WSL has a D-Bus and Secret Service stack available in principle, but on most WSL installations the `dbus-daemon` is not running in the WSL session. This makes the Secret Service backend effectively unavailable even though the packages are installed.
+
+Run `ksef-mcp doctor` to inspect the keyring state without contacting KSeF or spending any API budget:
+
+```bash
+ksef-mcp doctor
+```
+
+If the output shows:
+
+```
+Keyring: brak dostępnego magazynu (headless, WSL, kontener).
+Ścieżka awaryjna: wyeksportuj zmienną KSEF_TOKEN.
+```
+
+then `KSEF_TOKEN` is the correct path. If it shows available backends, you can use the keyring normally with `ksef-mcp onboarding`.
+
+---
+
+## Locked keyring after machine sleep
+
+This section applies to **desktop systems** with a working keyring, not to headless deployments.
+
+Even when the keyring is available, the Secret Service collection can lock itself after machine sleep or the store's own idle timeout. When this happens, ksef-mcp detects the lock before every token access and exits with an error rather than attempting a read:
+
+```
+The system keyring collection is locked, so nothing was read or written:
+asking the keyring would open an unlock prompt and hang the MCP
+transport. Unlock the collection in your desktop session, or export
+KSEF_TOKEN as the documented fallback.
+```
+
+The check runs **before every token access** — not once at startup. A collection that was unlocked when the MCP server started can lock itself while the server is running, and the next token access would be the one that hangs. The per-access check is the safeguard against that.
+
+**To recover:** unlock the keyring collection in your desktop session (typically by opening the Passwords / Seahorse application, or by locking and unlocking your screen), then retry the operation. Alternatively, export `KSEF_TOKEN` for the remainder of the session.
+
+<Tip>
+Run `ksef-mcp doctor` after waking a machine to check the collection lock state before starting an agent session. It reads the D-Bus lock property directly without opening any unlock prompt or touching KSeF.
+</Tip>

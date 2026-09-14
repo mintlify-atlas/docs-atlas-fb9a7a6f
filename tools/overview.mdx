@@ -1,0 +1,74 @@
+---
+title: "MCP Tools Exposed by ksef-mcp — Complete Reference"
+sidebarTitle: "Overview"
+description: "All five MCP tools ksef-mcp registers: what each does, what it never returns, and how the rate-limit budget is shared across them."
+---
+
+ksef-mcp registers five tools with the MCP server. Four of them talk to Poland's national e-invoicing registry (KSeF) on behalf of the configured taxpayer; the fifth is a lightweight health check that costs nothing. Every tool call is appended to a tamper-evident audit trail before the response is returned — whether or not an invoice was found, and whether or not the agent asked for confirmation.
+
+## Design invariants that apply to all tools
+
+**Invoice bodies never appear in any tool response.** FA(2)/FA(3) XML documents contain counterparty personal data. Reading one means opening the file that `synchronise_invoices` names in its response — a deliberate separation that keeps personal data out of the model's context window.
+
+**Most tools take no arguments.** `synchronise_invoices`, `list_recent_invoices`, and `review_new_invoices` accept no parameters. Caller-driven date windows would let an agent exhaust the Ministry's 20-exports-per-hour budget in two minutes, a pattern the Ministry reads as deliberate limit circumvention. The window is always decided by the tool or by KSeF itself.
+
+**Closed windows are cached.** A listing or review whose both date bounds are in the past can be answered from disk. Calling `list_recent_invoices` or `review_new_invoices` twice within the same clock hour costs one metadata query, not two. `export_period_statement` for a closed calendar month is similarly free on the second call.
+
+**Every access is logged.** The audit trail at `~/.local/share/ksef-mcp/subjects/<NIP>/<env>/audit.jsonl` records the operation name, the NIP, the authorisation basis, the subject role (SELLER / BUYER / THIRD\_SUBJECT / AUTHORIZED\_SUBJECT), the query window, the number of documents involved, and their KSeF numbers — but never an invoice body, and never the API token.
+
+## Tools at a glance
+
+<CardGroup cols={2}>
+  <Card title="synchronise_invoices" icon="rotate" href="/tools/synchronise-invoices">
+    Fetches, decrypts, and archives every invoice package KSeF has finished since the last run. Covers all four subject types. Safe to call repeatedly — a package already in the archive is reported under `already_held`, not downloaded again.
+  </Card>
+  <Card title="list_recent_invoices" icon="list" href="/tools/list-recent-invoices">
+    Lists invoice metadata for all four subject types for the last 30 days. Read-only, no confirmation needed. Above 50 invoices, individual rows are dropped and replaced with counts and gross totals per currency.
+  </Card>
+  <Card title="export_period_statement" icon="file-csv" href="/tools/export-period-statement">
+    Writes one calendar month of purchase invoices to a semicolon-delimited CSV file ready for an accountant. Takes a `YYYY-MM` period and an optional `working_directory`. The only tool that writes a file to a user-declared location.
+  </Card>
+  <Card title="review_new_invoices" icon="bell" href="/tools/review-new-invoices">
+    Reports invoices that have not yet been shown to a person. Compares the last 90 days against a persistent ledger of already-reviewed KSeF numbers. Above 50 new invoices, nothing is marked as reviewed and the agent must call again.
+  </Card>
+</CardGroup>
+
+<Card title="server_info" icon="circle-info">
+  Returns the server name and version string. Takes no arguments and makes no network calls. Useful as a connection check or to confirm which build is running.
+
+  **Example response**
+
+  ```json
+  {
+    "name": "ksef-mcp",
+    "version": "0.4.0"
+  }
+  ```
+</Card>
+
+## Rate-limit budget
+
+KSeF grants each authenticated session a live allowance — typically 20 metadata queries per hour and 20 export initiations per hour. ksef-mcp reads the current limits from the API at the start of every session and enforces them locally before spending a query.
+
+| Tool | Query type consumed | Frequency limit |
+|---|---|---|
+| `synchronise_invoices` | export initiation | SELLER/BUYER: once per 15 min; THIRD_SUBJECT/AUTHORIZED_SUBJECT: once per day, UTC 00:00–06:00 only |
+| `list_recent_invoices` | metadata query × 4 | Once per hour (cached within the hour) |
+| `export_period_statement` | metadata query × 1 | Once per closed month (cached thereafter) |
+| `review_new_invoices` | metadata query × 4 | Once per hour (cached within the hour) |
+| `server_info` | none | Unlimited |
+
+<Note>
+  When the hourly export budget is exhausted, `synchronise_invoices` returns `BUDGET_SPENT` for the affected subject type rather than failing. Pending export keys and continuation points are preserved on disk so the next run resumes exactly where this one stopped.
+</Note>
+
+## Audit trail disclosure types
+
+Each audit entry carries one of four disclosure values that record what actually happened to the invoice data:
+
+| Disclosure | Meaning |
+|---|---|
+| `disk` | Invoice bodies were written to the archive directory |
+| `model_context` | Invoice metadata entered a tool response (and therefore the model's context window) |
+| `deduplication_skip` | An invoice was seen and recognised as already held — not downloaded again |
+| `removal` | Invoice bodies were deleted by an explicit retention purge |

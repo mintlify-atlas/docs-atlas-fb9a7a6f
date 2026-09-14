@@ -1,0 +1,204 @@
+---
+title: "synchronise_invoices — Incremental KSeF Invoice Archive Sync"
+sidebarTitle: "synchronise_invoices"
+description: "Fetches, decrypts, and archives every invoice package KSeF has finished since the last run. Covers all four subject types with built-in rate limiting and resume-on-failure."
+---
+
+`synchronise_invoices` is the archiving engine of ksef-mcp. Each call opens a KSeF session, reads the current rate-limit budget, and advances the synchronisation state for all four subject types — SELLER, BUYER, THIRD\_SUBJECT, and AUTHORIZED\_SUBJECT — writing the decrypted invoice XML files to the configured archive directory. The tool is safe to call repeatedly: a package already in the archive is reported under `already_held`, never downloaded a second time, and a package whose download failed mid-way is resumed from its saved export key rather than re-requested.
+
+## Why this tool takes no arguments
+
+The date window, the package size, and how many packages to request are decided by KSeF and by the hourly export allowance — never by the caller. An agent driving those parameters from outside would exhaust the 20-exports-per-hour budget in two minutes, and the Ministry reads that pattern as deliberate limit circumvention. The continuation point (where the next window starts) is maintained automatically on disk per subject type and per environment.
+
+## Agent invocation
+
+An agent calls this tool with no arguments:
+
+```
+Call synchronise_invoices
+```
+
+Or as a structured tool call:
+
+```json
+{
+  "tool": "synchronise_invoices",
+  "arguments": {}
+}
+```
+
+## Rate limiting and scheduling
+
+ksef-mcp enforces KSeF's own live limits, read from the API at the start of every session. It also imposes additional interval floors to stay well under the budget ceiling:
+
+| Subject type | Minimum interval | Time-of-day restriction |
+|---|---|---|
+| `SELLER` | 15 minutes | None |
+| `BUYER` | 15 minutes | None |
+| `THIRD_SUBJECT` | 24 hours | UTC 00:00–06:00 night window only |
+| `AUTHORIZED_SUBJECT` | 24 hours | UTC 00:00–06:00 night window only |
+
+THIRD\_SUBJECT and AUTHORIZED\_SUBJECT appear rarely in practice. Restricting them to the night window leaves SELLER and BUYER their share of the 20-export budget during working hours.
+
+When a subject type is not yet due, the tool returns `NOT_DUE` for that direction without spending a query.
+
+<Note>
+  The UTC night window (00:00–06:00) is fixed in UTC — not the machine's local timezone — so the interval does not shift with daylight saving time or the operator's location.
+</Note>
+
+## Resume on failure
+
+Every pending export is written to disk with its AES-256 key and part list before any download begins. If a run is interrupted:
+
+- The export key survives the restart.
+- The continuation point stays at the position KSeF confirmed, not at what this process managed to write.
+- The next call resumes the in-progress package instead of requesting a new export from the same window.
+
+A package that KSeF itself reports as `FAILED` is recorded with a null key (the key is explicitly discarded after a failure) and the same window is requested fresh on the next run — one export is spent, nothing is skipped.
+
+<Warning>
+  Never delete the sync state file manually. Losing the continuation point forces a full re-sync from up to 100 days back, and re-downloading packages that are already archived wastes export budget.
+</Warning>
+
+## Response model
+
+`synchronise_invoices` returns a `SynchronisationResult` object.
+
+<ResponseField name="environment" type="string" required>
+  The KSeF environment this run targeted: `"test"` or `"prod"`.
+</ResponseField>
+
+<ResponseField name="state_file" type="string" required>
+  Absolute path to the sync state file on disk. This file holds continuation points and pending export keys for all four subject types.
+</ResponseField>
+
+<ResponseField name="pending_exports" type="list[string]" required>
+  Export reference strings that are still in flight (either still building on KSeF's side or downloaded but not yet archived). These will be picked up automatically on the next call.
+</ResponseField>
+
+<ResponseField name="subject_types" type="list[SubjectTypeResult]" required>
+  One entry per subject type (SELLER, BUYER, THIRD\_SUBJECT, AUTHORIZED\_SUBJECT).
+
+  <Expandable title="SubjectTypeResult fields">
+    <ResponseField name="subject_type" type="string" required>
+      One of `"seller"`, `"buyer"`, `"third_subject"`, `"authorized_subject"`.
+    </ResponseField>
+
+    <ResponseField name="outcome" type="string" required>
+      One of the `SyncOutcome` values (see table below).
+    </ResponseField>
+
+    <ResponseField name="detail" type="string" required>
+      A human-readable explanation of the outcome — what happened in this run for this subject type. Never contains invoice content.
+    </ResponseField>
+
+    <ResponseField name="invoice_count" type="integer" required>
+      Number of invoices in the package that was processed. Zero when no package was fetched this run (e.g. `NOT_DUE`).
+    </ResponseField>
+
+    <ResponseField name="part_count" type="integer" required>
+      Number of encrypted archive parts that made up the package. A large export may be split into several parts by KSeF.
+    </ResponseField>
+
+    <ResponseField name="synchronised_up_to" type="string | null" required>
+      ISO 8601 datetime of the KSeF permanent-storage high-water mark reached by this run. `null` if the subject type was not due or the run did not advance the window.
+    </ResponseField>
+
+    <ResponseField name="archived" type="list[string]" required>
+      KSeF numbers of invoices written to the archive in this run. Empty when no new invoices were archived (e.g. outcome is `NOT_DUE` or `ALREADY_HELD`).
+    </ResponseField>
+
+    <ResponseField name="already_held" type="list[string]" required>
+      KSeF numbers of invoices that were present in the package but already existed in the archive. These are logged to the audit trail as `deduplication_skip` events — they were seen and correctly recognised, not silently ignored.
+    </ResponseField>
+
+    <ResponseField name="archive_directory" type="string | null" required>
+      Absolute path to the archive directory for this subject type. `null` if no archive operation was attempted.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## SyncOutcome values
+
+| Value | Meaning |
+|---|---|
+| `ARCHIVED` | The package was fetched, decrypted, and written to the archive successfully. |
+| `NOT_ARCHIVED` | The package was fetched but could not be stored (network error, unreadable manifest, etc.). The export key is retained on disk for the next run. |
+| `STILL_RUNNING` | KSeF is still building the package. The reference is recorded on disk; the next run will poll again. |
+| `FAILED` | KSeF itself reported the export as failed. The key is discarded; the same window will be re-requested next run. |
+| `NOT_DUE` | The minimum interval for this subject type has not elapsed. No query was made. |
+| `BUDGET_SPENT` | The hourly export or status-check budget was exhausted before this subject type could be processed. Continuation points are intact. |
+| `INCONCLUSIVE` | The package was archived but KSeF did not return a continuation timestamp. The high-water mark stays where it was. |
+
+## Example response
+
+```json
+{
+  "environment": "prod",
+  "state_file": "/home/user/.local/share/ksef-mcp/subjects/1234567890/prod/sync.json",
+  "pending_exports": [],
+  "subject_types": [
+    {
+      "subject_type": "seller",
+      "outcome": "archived",
+      "detail": "Paczka abc123 trafiła do archiwum.",
+      "invoice_count": 3,
+      "part_count": 1,
+      "synchronised_up_to": "2025-06-01T10:00:00+00:00",
+      "archived": [
+        "1234567890-20250530-ABCDEFGHIJKL-MN",
+        "1234567890-20250531-OPQRSTUVWXYZ-AB",
+        "1234567890-20250601-CDEFGHIJKLMN-OP"
+      ],
+      "already_held": [],
+      "archive_directory": "/home/user/.local/share/ksef-mcp/subjects/1234567890/prod/archive/seller"
+    },
+    {
+      "subject_type": "buyer",
+      "outcome": "not_due",
+      "detail": "Za wcześnie na kolejny eksport dla tego typu podmiotu.",
+      "invoice_count": 0,
+      "part_count": 0,
+      "synchronised_up_to": "2025-06-01T09:45:00+00:00",
+      "archived": [],
+      "already_held": [],
+      "archive_directory": null
+    },
+    {
+      "subject_type": "third_subject",
+      "outcome": "not_due",
+      "detail": "Za wcześnie na kolejny eksport dla tego typu podmiotu.",
+      "invoice_count": 0,
+      "part_count": 0,
+      "synchronised_up_to": null,
+      "archived": [],
+      "already_held": [],
+      "archive_directory": null
+    },
+    {
+      "subject_type": "authorized_subject",
+      "outcome": "not_due",
+      "detail": "Za wcześnie na kolejny eksport dla tego typu podmiotu.",
+      "invoice_count": 0,
+      "part_count": 0,
+      "synchronised_up_to": null,
+      "archived": [],
+      "already_held": [],
+      "archive_directory": null
+    }
+  ]
+}
+```
+
+## Audit trail
+
+For each subject type, `synchronise_invoices` appends one or two entries to the audit trail:
+
+- A `disk` entry listing the KSeF numbers written to the archive.
+- A `deduplication_skip` entry listing the KSeF numbers that were already held.
+
+Either entry is omitted when its list would be empty. Both are written under the `synchronise_invoices` operation name with the authorisation NIP, environment, and the high-water-mark range as criteria.
+
+<Tip>
+  To check what was archived in a given run, inspect the audit trail at `~/.local/share/ksef-mcp/subjects/<NIP>/<env>/audit.jsonl`. Each line is a JSON object. Filter by `"operation": "synchronise_invoices"` and `"disclosure": "disk"`.
+</Tip>

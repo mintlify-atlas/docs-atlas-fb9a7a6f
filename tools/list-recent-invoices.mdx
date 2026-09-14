@@ -1,0 +1,234 @@
+---
+title: "list_recent_invoices — Invoice Metadata for the Last 30 Days"
+sidebarTitle: "list_recent_invoices"
+description: "Lists invoice metadata across all four subject types for a fixed 30-day window. Read-only, no confirmation required, and cached within the same clock hour."
+---
+
+`list_recent_invoices` queries KSeF for invoice metadata for all four subject types — SELLER, BUYER, THIRD\_SUBJECT, and AUTHORIZED\_SUBJECT — over the last 30 days, and returns the results in a single structured response. The call is read-only; it writes nothing to disk and requires no confirmation. The window ends on the current clock hour, so calling the tool twice within the same hour costs one metadata query per subject type (four total), not eight.
+
+## Why this tool takes no arguments
+
+A caller-driven date window would let an agent spend the Ministry's 20-metadata-queries-per-hour allowance in seconds, times four subject types. The window is fixed at 30 days, ending at the most recent completed hour, for the same reason the cache exists: a fixed, deterministic window can be answered from disk without touching the API.
+
+Reads are not gated behind a confirmation prompt. A confirmation on a read teaches the person to approve without looking, and wastes the gate that write operations genuinely need.
+
+## Agent invocation
+
+```
+Call list_recent_invoices
+```
+
+```json
+{
+  "tool": "list_recent_invoices",
+  "arguments": {}
+}
+```
+
+## The 50-invoice threshold
+
+Above 50 invoices for a given subject type, individual rows are dropped from the response. The `invoices` list is returned empty, and the `message` field explains what happened in plain language. The count and gross totals per currency are still returned. The threshold is 50 because a typical business quarter has around 38 invoices; above 50 the chat window is unreadable and the listing becomes noise rather than signal.
+
+<Note>
+  An empty `invoices` list does not mean there are no invoices. Check `invoice_count` and `outcome` — if `outcome` is `"summarised"`, rows were dropped because the count exceeded the threshold.
+</Note>
+
+## Caching behaviour
+
+The window ends on the hour (e.g. `2025-06-15T14:00:00Z`). Any repeat call before the next full hour returns the cached result from disk. The `from_cache` field in each `DirectionListingResult` tells you whether the response came from the cache or a live API call, and `queried_at` records when the API was actually called.
+
+## Response model
+
+`list_recent_invoices` returns an `InvoiceListingResult` object.
+
+<ResponseField name="nip" type="string" required>
+  The 10-digit NIP (tax identification number) of the authenticated taxpayer.
+</ResponseField>
+
+<ResponseField name="environment" type="string" required>
+  The KSeF environment: `"test"` or `"prod"`.
+</ResponseField>
+
+<ResponseField name="threshold" type="integer" required>
+  The maximum number of invoices that will be listed individually. Always `50`. Above this, rows are replaced with a count and gross totals.
+</ResponseField>
+
+<ResponseField name="period_from" type="string" required>
+  ISO 8601 datetime of the start of the query window (30 days before the hour boundary).
+</ResponseField>
+
+<ResponseField name="period_to" type="string | null" required>
+  ISO 8601 datetime of the end of the query window (the most recently completed hour). `null` only in internal edge cases.
+</ResponseField>
+
+<ResponseField name="subject_types" type="list[DirectionListingResult]" required>
+  One entry for each of the four subject types queried.
+
+  <Expandable title="DirectionListingResult fields">
+    <ResponseField name="subject_type" type="string" required>
+      One of `"seller"`, `"buyer"`, `"third_subject"`, `"authorized_subject"`.
+    </ResponseField>
+
+    <ResponseField name="outcome" type="string" required>
+      One of:
+      - `"listed"` — all invoices are in the `invoices` array (count ≤ 50)
+      - `"summarised"` — count exceeded the threshold; rows are dropped
+      - `"empty"` — no invoices found in the window
+      - `"budget_spent"` — the hourly metadata allowance was exhausted before this subject type could be queried
+    </ResponseField>
+
+    <ResponseField name="message" type="string" required>
+      A human-readable summary of the outcome. When `outcome` is `"summarised"` or `"empty"`, the message includes a restatement of the exact question asked (NIP, environment, subject role, period, and date type), so an empty result can be distinguished from a wrong question.
+    </ResponseField>
+
+    <ResponseField name="invoices" type="list[InvoiceRow]" required>
+      Individual invoice metadata rows. Present only when `outcome` is `"listed"` (count ≤ 50). Empty list otherwise.
+
+      <Expandable title="InvoiceRow fields">
+        <ResponseField name="ksef_number" type="string" required>
+          The KSeF-assigned identifier, in the format `<NIP>-<YYYYMMDD>-<12chars>-<2chars>`.
+        </ResponseField>
+
+        <ResponseField name="seller_invoice_number" type="string" required>
+          The invoice number as assigned by the seller. This is the seller's own numbering scheme, not a KSeF identifier.
+        </ResponseField>
+
+        <ResponseField name="issue_date" type="string" required>
+          The date the seller issued the invoice, in ISO 8601 format (`YYYY-MM-DD`). This is the seller's own date, not the KSeF acceptance date.
+        </ResponseField>
+
+        <ResponseField name="seller_nip" type="string" required>
+          The 10-digit NIP of the seller.
+        </ResponseField>
+
+        <ResponseField name="seller_name" type="string | null" required>
+          The legal name of the seller as recorded on the invoice. May be `null` if not present in the metadata.
+        </ResponseField>
+
+        <ResponseField name="buyer_name" type="string | null" required>
+          The legal name of the buyer as recorded on the invoice. May be `null` if not present in the metadata.
+        </ResponseField>
+
+        <ResponseField name="gross_amount" type="Decimal" required>
+          The gross invoice amount, as an exact decimal. No rounding is applied at any point.
+        </ResponseField>
+
+        <ResponseField name="net_amount" type="Decimal" required>
+          The net invoice amount (gross minus VAT), as an exact decimal.
+        </ResponseField>
+
+        <ResponseField name="vat_amount" type="Decimal" required>
+          The VAT amount, as an exact decimal.
+        </ResponseField>
+
+        <ResponseField name="currency" type="string" required>
+          ISO 4217 currency code, e.g. `"PLN"`, `"EUR"`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="invoice_count" type="integer" required>
+      Total number of invoices in the window for this subject type. Present regardless of whether rows are listed individually.
+    </ResponseField>
+
+    <ResponseField name="gross_totals" type="list[GrossTotal]" required>
+      Gross totals grouped by currency. One entry per distinct currency found in the window.
+
+      <Expandable title="GrossTotal fields">
+        <ResponseField name="currency" type="string" required>
+          ISO 4217 currency code.
+        </ResponseField>
+        <ResponseField name="gross" type="Decimal" required>
+          Sum of all gross amounts in this currency. Exact decimal — currencies are never mixed.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="complete" type="boolean" required>
+      `true` if KSeF returned all matching invoices in a single response. `false` if the API indicated there are more results than fit in one page. When `false`, the count and totals cover only what was returned, not the full window.
+    </ResponseField>
+
+    <ResponseField name="queried_at" type="string | null" required>
+      ISO 8601 datetime when the KSeF API was actually called. `null` when `outcome` is `"budget_spent"` (the query was never made).
+    </ResponseField>
+
+    <ResponseField name="from_cache" type="boolean" required>
+      `true` if this result was served from the on-disk period cache rather than a live API call. A cached result costs zero metadata queries.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example response
+
+<CodeGroup>
+```json Under-threshold (invoices listed)
+{
+  "nip": "1234567890",
+  "environment": "prod",
+  "threshold": 50,
+  "period_from": "2025-05-16T13:00:00+00:00",
+  "period_to": "2025-06-15T13:00:00+00:00",
+  "subject_types": [
+    {
+      "subject_type": "buyer",
+      "outcome": "listed",
+      "message": "3 faktury, brutto 4920,00 PLN. Wypisuję wszystkie — próg 50 nie został przekroczony.",
+      "invoices": [
+        {
+          "ksef_number": "9876543210-20250601-ABCDEFGHIJKL-MN",
+          "seller_invoice_number": "FV/2025/06/001",
+          "issue_date": "2025-06-01",
+          "seller_nip": "9876543210",
+          "seller_name": "Dostawca Sp. z o.o.",
+          "buyer_name": "Nabywca S.A.",
+          "gross_amount": "2460.00",
+          "net_amount": "2000.00",
+          "vat_amount": "460.00",
+          "currency": "PLN"
+        }
+      ],
+      "invoice_count": 3,
+      "gross_totals": [
+        { "currency": "PLN", "gross": "4920.00" }
+      ],
+      "complete": true,
+      "queried_at": "2025-06-15T13:02:41+00:00",
+      "from_cache": false
+    }
+  ]
+}
+```
+
+```json Over-threshold (summarised)
+{
+  "nip": "1234567890",
+  "environment": "prod",
+  "threshold": 50,
+  "period_from": "2025-05-16T13:00:00+00:00",
+  "period_to": "2025-06-15T13:00:00+00:00",
+  "subject_types": [
+    {
+      "subject_type": "buyer",
+      "outcome": "summarised",
+      "message": "Nie wypisuję pozycji: 73 faktury to więcej niż próg 50. Podsumowanie okresu — 73 faktury, brutto 184230,50 PLN.",
+      "invoices": [],
+      "invoice_count": 73,
+      "gross_totals": [
+        { "currency": "PLN", "gross": "184230.50" }
+      ],
+      "complete": true,
+      "queried_at": "2025-06-15T13:02:41+00:00",
+      "from_cache": false
+    }
+  ]
+}
+```
+</CodeGroup>
+
+## Audit trail
+
+For each subject type, one `model_context` entry is appended to the audit trail. This entry is written even when the subject type returned zero invoices — the query was made and the scope of what was asked is half of what a data-access dispute turns on. When `outcome` is `"summarised"`, the entry records the count with no individual KSeF numbers (because the numbers never reached the response).
+
+<Warning>
+  If `complete` is `false` for any subject type, the listing does not represent the full window. Invoice counts and totals cover only the first page. Use `synchronise_invoices` to ensure the full archive is up to date, then re-run the listing.
+</Warning>

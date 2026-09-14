@@ -1,72 +1,67 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "ksef-mcp",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#1A56DB",
+    "light": "#EBF2FF",
+    "dark": "#0F3276"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/Dev10x-Guru/ksef-mcp"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/Dev10x-Guru/ksef-mcp"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/onboarding",
+              "cli/token",
+              "cli/verify",
+              "cli/skill",
+              "cli/purge"
+            ]
+          },
+          {
+            "group": "MCP Tools",
+            "pages": [
+              "tools/overview",
+              "tools/synchronise-invoices",
+              "tools/list-recent-invoices",
+              "tools/export-period-statement",
+              "tools/review-new-invoices"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/security",
+              "guides/rate-limits",
+              "guides/environments",
+              "guides/headless-and-wsl"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

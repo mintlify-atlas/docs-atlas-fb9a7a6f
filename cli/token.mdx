@@ -1,0 +1,165 @@
+---
+title: "ksef-mcp token — Manage KSeF Tokens in the Keyring"
+sidebarTitle: "token"
+description: "Store, delete, and inspect KSeF authentication tokens with ksef-mcp token set, delete, and status. Covers the KSEF_TOKEN environment variable fallback."
+---
+
+The `token` command group manages the KSeF authentication token stored in your OS keyring. Each subcommand requires `--nip` because the keyring entry is scoped to a specific Polish tax identifier — an accounting office managing multiple subjects keeps each token separately and neither can be mistaken for the other.
+
+All three subcommands are safe to run in a shell script loop or monitoring tool: they do **not** connect to KSeF and do not spend any API budget.
+
+## The `KSEF_TOKEN` fallback environment variable
+
+When the environment variable `KSEF_TOKEN` is set, it takes **precedence over the keyring** for every token read. This is the intended escape route for headless environments, WSL instances, and containers where no OS secret store is available.
+
+<Warning>
+`KSEF_TOKEN` is **not scoped to a NIP**. A shell session has exactly one value of it. If you have two subjects configured and both rely on the same variable, both resolve to the same token — which is almost certainly wrong. Use the keyring for multi-subject deployments.
+</Warning>
+
+---
+
+## `ksef-mcp token set`
+
+Stores a new token for the given NIP. The token is read from the terminal without echo, then immediately read back from the keyring to confirm the write succeeded. Because a KSeF token is displayed only once by the portal, this read-back is the only opportunity to catch a write failure before the token is unrecoverable.
+
+```bash title="Syntax"
+ksef-mcp token set --nip <NIP>
+```
+
+<ParamField path="--nip" type="string" required>
+  The NIP (Polish tax identifier) to associate with the token. The keyring entry
+  is keyed by this value — different NIPs store independent tokens.
+</ParamField>
+
+### Example
+
+```bash title="Storing a token"
+$ uvx ksef-mcp token set --nip 1234567890
+
+Token wygenerujesz pod adresem:
+  https://ap.ksef.mf.gov.pl/web/tokens/generate-token
+Wymaga wcześniejszego uwierzytelnienia podpisem
+kwalifikowanym albo Profilem Zaufanym — tego kroku nie da
+się zautomatyzować i nie udaję, że przeprowadzę przez całość.
+Do odczytu faktur wystarczy uprawnienie InvoiceRead;
+uprawnienia tokenu są niezmienne, więc nie bierz zapasowych.
+Token zobaczysz tylko raz.
+Wklej token KSeF (bez echa):
+Token dla 1234567890 zapisany i zweryfikowany: 64 znaków, końcówka …Xk9Z
+```
+
+<Note>
+  The confirmation line shows the token **length** and its **last four characters** — never the full value. If these do not match what you pasted, something went wrong with the keyring write. Do not close the portal window yet.
+</Note>
+
+### Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Token stored and verified by read-back. |
+| `1` | `EXIT_UNUSABLE_KEYRING` | Keyring unavailable or refused the operation. |
+
+---
+
+## `ksef-mcp token delete`
+
+Removes the token for the given NIP from the keyring. Deletion does **not** revoke the token at the KSeF portal — it only removes the local copy. If the `KSEF_TOKEN` environment variable is currently set in your shell, the command prints an explicit warning: the token still works via the environment variable even though the keyring entry is gone.
+
+```bash title="Syntax"
+ksef-mcp token delete --nip <NIP>
+```
+
+<ParamField path="--nip" type="string" required>
+  The NIP whose keyring entry should be removed.
+</ParamField>
+
+### Example — successful deletion
+
+```bash title="Deleting a token"
+$ uvx ksef-mcp token delete --nip 1234567890
+Token dla 1234567890 usunięty z keyringu.
+```
+
+### Example — deletion with KSEF_TOKEN still set
+
+```bash title="Deletion when KSEF_TOKEN is exported"
+$ uvx ksef-mcp token delete --nip 1234567890
+Token dla 1234567890 usunięty z keyringu.
+UWAGA: zmienna KSEF_TOKEN jest nadal ustawiona i ma pierwszeństwo, więc token wciąż działa.
+Wycofaj go z sesji: unset KSEF_TOKEN
+```
+
+### Example — no token found
+
+```bash title="Deletion when no token exists"
+$ uvx ksef-mcp token delete --nip 9999999999
+W keyringu nie było tokenu dla 9999999999.
+```
+
+### Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Token was found and removed from the keyring. |
+| `1` | `EXIT_UNUSABLE_KEYRING` | Keyring unavailable or refused the operation. |
+| `2` | `EXIT_NO_TOKEN` | No keyring entry existed for the given NIP. |
+
+---
+
+## `ksef-mcp token status`
+
+Reports whether a token exists for the given NIP, where it comes from, its length, and its last four characters. The token value is **never shown**.
+
+```bash title="Syntax"
+ksef-mcp token status --nip <NIP>
+```
+
+<ParamField path="--nip" type="string" required>
+  The NIP to check. If `KSEF_TOKEN` is set in the environment, that value is
+  reported regardless of the NIP — see the warning above.
+</ParamField>
+
+### Output fields
+
+<ResponseField name="source" type="string">
+  Where the token was found. Either `system keyring` (keyring backend scoped to
+  the NIP) or the `KSEF_TOKEN` environment variable.
+</ResponseField>
+
+<ResponseField name="length" type="integer">
+  The number of characters in the token.
+</ResponseField>
+
+<ResponseField name="suffix" type="string">
+  The last four characters of the token, for visual confirmation without
+  exposing the value.
+</ResponseField>
+
+### Example — token in keyring
+
+```bash title="Token found in keyring"
+$ uvx ksef-mcp token status --nip 1234567890
+Token dla 1234567890 pochodzi z keyringu systemowego: 64 znaków, końcówka …Xk9Z. Wartości nie pokazuję.
+```
+
+### Example — token from environment variable
+
+```bash title="Token sourced from KSEF_TOKEN"
+$ uvx ksef-mcp token status --nip 1234567890
+Token dla 1234567890 pochodzi z zmiennej KSEF_TOKEN: 64 znaków, końcówka …Xk9Z. Wartości nie pokazuję.
+```
+
+### Example — no token
+
+```bash title="No token found"
+$ uvx ksef-mcp token status --nip 9999999999
+Brak tokenu dla 9999999999. Zapisz go: ksef-mcp token set --nip 9999999999
+```
+
+### Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Token found; source, length, and suffix printed. |
+| `1` | `EXIT_UNUSABLE_KEYRING` | Keyring unavailable or refused the operation. |
+| `2` | `EXIT_NO_TOKEN` | No token found — neither in the keyring nor in `KSEF_TOKEN`. |

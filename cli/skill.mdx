@@ -1,0 +1,144 @@
+---
+title: "ksef-mcp skill install — Install the Claude Code Skill"
+sidebarTitle: "skill install"
+description: "Installs a SKILL.md that teaches Claude Code how to use ksef-mcp correctly. Supports user and project scope with diff prompts before overwriting any edits."
+---
+
+The `skill install` command writes a skill file for Claude Code — a `SKILL.md` that tells the agent what ksef-mcp does, how to use its tools, what it must never do, and which CLI commands are relevant. Without the skill file, Claude Code has no structured guidance for using the server correctly; with it, the agent knows to read from the local archive, label every answer with the KSeF environment, and never fetch invoice XML into its context.
+
+## Scopes
+
+The skill file can be installed in one of two places, controlled by the required `--scope` flag:
+
+<CardGroup cols={2}>
+  <Card title="user scope" icon="user">
+    Writes to `~/.claude/skills/ksef-mcp/SKILL.md`. Available to every Claude
+    Code session for your user account, regardless of which directory you open.
+  </Card>
+  <Card title="project scope" icon="folder">
+    Writes to `./.claude/skills/ksef-mcp/SKILL.md` inside the **current working
+    directory**. Suitable for committing to a project repository so every team
+    member gets the same skill automatically.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Use `--scope user` for personal use — it works in any project without any extra
+  files to commit. Use `--scope project` when you want the skill checked into a
+  team repository, so everyone who clones it gets consistent agent behaviour
+  without a separate installation step.
+</Tip>
+
+## Syntax
+
+```bash title="Syntax"
+ksef-mcp skill install --scope user|project
+```
+
+<ParamField path="--scope" type="string" required>
+  Where to install the skill file. Must be either `user` or `project`. There is
+  no default value: because `uvx ksef-mcp` can be run from any directory, a
+  silently assumed scope could write the skill file somewhere you never intended
+  to look for it.
+</ParamField>
+
+## Behaviour
+
+The command compares the content that would be written against what is already installed (if anything), then takes one of three paths:
+
+<Steps>
+  <Step title="Skill is absent">
+    The target file does not exist. The skill directory is created with mode
+    `0755` and the skill file is written. A confirmation line shows the version
+    number the skill was generated for.
+  </Step>
+
+  <Step title="Skill is up to date">
+    The installed file is byte-for-byte identical to the version this build
+    would write. Nothing is changed. A message confirms the skill is current.
+    This is the expected outcome when you run `skill install` after upgrading
+    ksef-mcp and the skill format has not changed in the new version.
+  </Step>
+
+  <Step title="Skill differs from installed">
+    The installed file exists but differs from the current version. The command
+    prints a unified diff between the installed file and the new version, then
+    asks for confirmation before overwriting. The default answer is **no** — if
+    you press Enter without typing anything, the installed file is kept and the
+    command exits with code **5**.
+
+    This protection matters if you have edited the skill file by hand: a silent
+    overwrite would discard your changes without warning.
+  </Step>
+</Steps>
+
+## Examples
+
+### Installing for the first time (user scope)
+
+```bash title="First install"
+$ uvx ksef-mcp skill install --scope user
+Zakres: user — /home/alice/.claude/skills/ksef-mcp/SKILL.md
+Skill zainstalowany dla wersji 0.1.0.
+```
+
+### Already up to date
+
+```bash title="Skill is current"
+$ uvx ksef-mcp skill install --scope user
+Zakres: user — /home/alice/.claude/skills/ksef-mcp/SKILL.md
+Skill jest aktualny dla wersji 0.1.0 — nic nie zmieniam.
+```
+
+### Upgrading with confirmation
+
+```bash title="Skill update prompt"
+$ uvx ksef-mcp skill install --scope user
+Zakres: user — /home/alice/.claude/skills/ksef-mcp/SKILL.md
+Zainstalowany skill różni się od nowego:
+  --- zainstalowany
+  +++ nowy
+  @@ -2,7 +2,7 @@
+   name: ksef-mcp
+   description: >-
+  -  Use when the user asks about Polish KSeF invoices handled by the ksef-mcp
+  +  Use when the user asks about Polish KSeF invoices handled by the ksef-mcp
+  ...
+Nadpisać zainstalowany skill? (t/n) [n]: t
+Skill zaktualizowany do wersji 0.2.0.
+```
+
+### Declining the overwrite
+
+```bash title="Declining a skill update"
+$ uvx ksef-mcp skill install --scope user
+Zakres: user — /home/alice/.claude/skills/ksef-mcp/SKILL.md
+Zainstalowany skill różni się od nowego:
+  ...
+Nadpisać zainstalowany skill? (t/n) [n]:
+Zostawiam zainstalowany skill bez zmian.
+$ echo $?
+5
+```
+
+### Installing in project scope
+
+```bash title="Project scope install"
+$ cd /home/alice/projects/my-app
+$ uvx ksef-mcp skill install --scope project
+Zakres: project — /home/alice/projects/my-app/.claude/skills/ksef-mcp/SKILL.md
+Skill zainstalowany dla wersji 0.1.0.
+```
+
+<Note>
+  After installing in project scope, consider adding `.claude/skills/ksef-mcp/SKILL.md`
+  to your version control. Team members who clone the repository will have the
+  skill available without running `skill install` themselves.
+</Note>
+
+## Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Skill installed, updated, or confirmed up to date. |
+| `5` | `EXIT_SKILL_KEPT` | Skill differed from the installed version but the user declined to overwrite. The installed file is unchanged. |

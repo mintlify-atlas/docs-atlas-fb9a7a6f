@@ -1,0 +1,108 @@
+---
+title: "ksef-mcp verify — Test Your KSeF Connection Live"
+sidebarTitle: "verify"
+description: "ksef-mcp verify contacts KSeF, confirms your token is accepted, and prints recent purchase invoices. Covers rate-limit handling and all exit codes."
+---
+
+The `verify` command makes a live connection to KSeF, authenticates with the configured token, and fetches a short list of recent purchase invoices. It is the recommended final step after configuring a new token or switching environments — but it must be run deliberately, not automatically, because every request consumes from your hourly KSeF API budget.
+
+<Warning>
+**Every invocation of `verify` spends your KSeF API quota.** The Ministry of Finance enforces an hourly request budget, and exceeding it triggers rate-limiting that affects your entire synchronisation workflow. Do not call `verify` in a loop, in a CI pipeline on every commit, or from a health-check script. Run it once to confirm a new setup, then leave it alone.
+</Warning>
+
+## Why verify is a separate command
+
+The `onboarding` wizard does not call `verify` at the end of the setup flow. This is intentional: onboarding may be re-run several times while adjusting settings, and each run that auto-verified would silently consume quota — including runs that end in a typo correction. The verification step is an explicit action you take when you are confident the configuration is final.
+
+## What verify checks
+
+<Steps>
+  <Step title="Load configuration">
+    Reads the configuration file written by `onboarding`. If no configuration
+    exists, exits with code **3** and tells you to run `ksef-mcp onboarding`.
+  </Step>
+
+  <Step title="Read token">
+    Reads the token from the keyring (or from the `KSEF_TOKEN` environment
+    variable if set). If no token is found, exits with code **2**. If the token
+    comes from the environment variable, a note is printed: the variable is not
+    NIP-scoped, so there is no guarantee it belongs to the configured subject.
+  </Step>
+
+  <Step title="Connect to KSeF">
+    Sends a request to the configured KSeF environment (`test`, `demo`, or
+    `production`) using the token. Prints the subject name and environment on
+    success.
+  </Step>
+
+  <Step title="Show recent purchase invoices">
+    Fetches and prints purchase invoices from the last 30 days. Each line shows
+    the issue date, gross amount with currency, and the seller name (or seller
+    NIP if the name is unavailable). An empty result is not an error.
+  </Step>
+</Steps>
+
+## Rate-limit handling
+
+If KSeF returns a rate-limit response, `verify` prints the `Retry-After` value (in seconds) and exits with code **4**. It **never retries automatically**. The Ministry of Finance penalises persistent clients, so waiting for the instructed time before retrying is both required and correct.
+
+```bash title="Rate-limited response"
+Nie potwierdziłem połączenia dla 1234567890 (production): rate limited
+Odczekaj 3600 s przed kolejną próbą — nie ponawiam samoczynnie.
+```
+
+If no `Retry-After` header was returned, the message omits the specific wait time but still advises you to wait before retrying.
+
+## Example output — invoices found
+
+```bash title="Successful verify with invoices"
+$ uvx ksef-mcp verify
+Odpytuję KSeF (test) jako 1234567890…
+Token pochodzi z: keyringu systemowego
+Działa — jesteś połączony jako ACME Sp. z o.o.
+Środowisko: test
+
+Ostatnie faktury zakupowe (3):
+  2025-06-01      1 230,00 PLN  FastPrint S.A.
+  2025-06-08      4 920,00 PLN  CloudHost Sp. z o.o.
+  2025-06-14        615,00 PLN  9876543210
+```
+
+## Example output — no recent invoices
+
+An empty result means no purchase invoices arrived in the last 30 days. The connection is confirmed regardless.
+
+```bash title="Successful verify with no invoices"
+$ uvx ksef-mcp verify
+Odpytuję KSeF (test) jako 1234567890…
+Token pochodzi z: keyringu systemowego
+Działa — jesteś połączony jako ACME Sp. z o.o.
+Środowisko: test
+W ostatnich 30 dniach nie ma faktur zakupowych.
+Połączenie jest potwierdzone — pusty wynik to nie błąd.
+```
+
+<Note>
+  An empty invoice list is a normal outcome. A brand-new test account, a subject
+  with no purchase activity in the last 30 days, or the `test` environment before
+  any test documents are posted will all produce this result. The connection
+  itself is still confirmed.
+</Note>
+
+## Example output — KSeF refused the token
+
+```bash title="Token rejected by KSeF"
+$ uvx ksef-mcp verify
+Odpytuję KSeF (production) jako 1234567890…
+Token pochodzi z: keyringu systemowego
+Nie potwierdziłem połączenia dla 1234567890 (production): token rejected
+```
+
+## Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Connection confirmed. Recent invoices printed (may be an empty list). |
+| `2` | `EXIT_NO_TOKEN` | No token found for the configured NIP. Run `ksef-mcp token set --nip <NIP>`. |
+| `3` | `EXIT_NOT_CONFIGURED` | No configuration file found. Run `ksef-mcp onboarding`. |
+| `4` | `EXIT_KSEF_REFUSED` | KSeF rejected the token or returned a rate-limit response. Check the printed reason and wait before retrying. |

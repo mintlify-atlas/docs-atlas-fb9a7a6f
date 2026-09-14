@@ -1,0 +1,150 @@
+---
+title: "ksef-mcp onboarding — Interactive First-Time Setup"
+sidebarTitle: "Onboarding"
+description: "Guided wizard that checks prerequisites, prompts for NIP and KSeF environment, stores your token in the OS keyring, and writes the configuration file."
+---
+
+The `onboarding` command is the guided setup wizard you run once before starting the MCP server for the first time. It checks your system prerequisites, prompts for every required value interactively, stores the token securely in your OS keyring, and writes a configuration file. Running it again is safe — you can use it to reconfigure any setting without manual file editing.
+
+## Prerequisites check
+
+Before asking for any input, `onboarding` runs a preflight check and prints the results to the terminal. Two subsystems are inspected:
+
+- **Node.js** — required by the MF invoice PDF generator. The minimum version is 22.14.0 (set by the Ministry of Finance generator). If a `.node-version` pin exists beside a `.git` root in the current working directory tree, the higher of the pin and the MF minimum is used as the requirement.
+- **System keyring** — the OS secret store that holds your KSeF token. On Linux this is the D-Bus Secret Service; on macOS it is the Keychain; on Windows it is the Credential Manager.
+
+<Warning>
+If no usable keyring backend is found — common in headless servers, WSL, and containers — `onboarding` prints an explanation and exits immediately with code **1**. You cannot proceed without a keyring. The documented alternative is to export the `KSEF_TOKEN` environment variable as a fallback (see [token management](/cli/token)).
+</Warning>
+
+## Interactive prompts
+
+When prerequisites pass, the wizard steps through each configuration value in order:
+
+<Steps>
+  <Step title="NIP">
+    Enter the Polish tax identifier (NIP) of the subject whose invoices will be
+    synchronised. The value is required; the prompt repeats until a non-empty
+    string is provided.
+  </Step>
+
+  <Step title="Keyring backend (when multiple backends are available)">
+    If more than one selectable keyring backend is registered, the wizard lists
+    them by number with their priority scores and marks the default. Enter the
+    number of the backend you want to use. This explicit choice prevents a
+    different package silently becoming the new winner the next time you upgrade
+    your environment.
+
+    If only one backend is available it is selected automatically and no prompt
+    appears.
+  </Step>
+
+  <Step title="KSeF environment">
+    Choose the KSeF environment to connect to. Accepted values are `test`,
+    `demo`, and `production`. The default is `test` — a deliberate choice to
+    prevent an accidental first run from touching the live registry and spending
+    your production rate-limit budget.
+  </Step>
+
+  <Step title="KSeF token">
+    The wizard prints the portal URL where you generate a token, then reads the
+    token from the terminal **without echo** so it is never displayed on screen.
+
+    ```
+    https://ap.ksef.mf.gov.pl/web/tokens/generate-token
+    ```
+
+    Generating a token requires authentication with a qualified electronic
+    signature or a Trusted Profile (Profil Zaufany). The `InvoiceRead` permission
+    is sufficient for all read operations; token permissions are fixed at
+    generation time and cannot be changed later. **The token is shown only once**
+    by the KSeF portal — copy it before closing that window.
+
+    After you paste the token, `onboarding` immediately reads it back from the
+    keyring to confirm the write succeeded. The confirmation line shows the
+    length and last four characters — never the full value.
+  </Step>
+
+  <Step title="Invoice directory">
+    Enter the local path where downloaded invoice XML files will be stored. The
+    default is `~/ksef/<NIP>`. The directory is created with mode `0700` if it
+    does not already exist; if it does exist, permissions are left unchanged.
+
+    If the path looks like it belongs to a cloud-sync folder (Dropbox, Google
+    Drive, OneDrive, iCloud, Nextcloud, pCloud, MEGA, Yandex.Disk), the wizard
+    prints a warning — invoice XML files contain counterparty personal data that
+    you may not want replicated to a third-party server.
+  </Step>
+</Steps>
+
+## Configuration file
+
+After all prompts are answered, `onboarding` writes a JSON configuration file
+with mode `0600`. The file is stored in the platform user-data directory (e.g.
+`~/.local/share/ksef-mcp/configuration.json` on Linux). A summary is printed to
+the terminal:
+
+```bash title="Example summary output"
+Konfiguracja zapisana:
+  NIP: 1234567890
+  Środowisko: test
+  Magazyn tokenu: keyring.backends.SecretService
+  Katalog faktur: /home/alice/ksef/1234567890
+  Plik: /home/alice/.local/share/ksef-mcp/configuration.json
+```
+
+## Why verify is not run automatically
+
+The wizard does **not** call `ksef-mcp verify` at the end of onboarding, even though that would be a convenient confirmation step. Every query to KSeF's API consumes from an hourly budget enforced by the Ministry of Finance. Because onboarding may be re-run to adjust a setting, automatically querying KSeF on each run would silently spend that budget during what is essentially a configuration exercise. When you are ready to confirm your connection, run `ksef-mcp verify` explicitly.
+
+<Tip>
+  After onboarding completes, run `ksef-mcp verify` once to confirm your token is accepted by KSeF before you configure the MCP server in your AI client.
+</Tip>
+
+## Example interactive session
+
+```bash title="Example onboarding session"
+$ uvx ksef-mcp onboarding
+ksef-mcp 0.1.0 — konfiguracja przed pierwszym uruchomieniem
+
+Warunki wstępne:
+  Node: 22.14.0 — spełnia wymaganie 22.14.0 (minimum generatora MF).
+  Ścieżka: /home/alice/.local/share/fnm/node-versions/v22.14.0/installation/bin/node
+  Keyring: dostępne magazyny —
+    1. keyring.backends.SecretService (priorytet 5) — domyślny
+
+NIP podmiotu: 1234567890
+Środowisko KSeF (test/demo/production) [test]:
+
+Token wygenerujesz pod adresem:
+  https://ap.ksef.mf.gov.pl/web/tokens/generate-token
+Wymaga wcześniejszego uwierzytelnienia podpisem
+kwalifikowanym albo Profilem Zaufanym — tego kroku nie da
+się zautomatyzować i nie udaję, że przeprowadzę przez całość.
+Do odczytu faktur wystarczy uprawnienie InvoiceRead;
+uprawnienia tokenu są niezmienne, więc nie bierz zapasowych.
+Token zobaczysz tylko raz.
+Wklej token KSeF (bez echa):
+  Token zapisany i odczytany z powrotem: 64 znaków, końcówka …Xk9Z
+
+Katalog na pobrane faktury [/home/alice/ksef/1234567890]:
+  Katalog utworzony z uprawnieniami 0700: /home/alice/ksef/1234567890
+
+Konfiguracja zapisana:
+  NIP: 1234567890
+  Środowisko: test
+  Magazyn tokenu: keyring.backends.SecretService
+  Katalog faktur: /home/alice/ksef/1234567890
+  Plik: /home/alice/.local/share/ksef-mcp/configuration.json
+
+Połączenia stąd nie sprawdzam — każde zapytanie zjada
+godzinowy budżet, także przy przebiegu poprawkowym.
+Gdy zechcesz to potwierdzić: ksef-mcp verify
+```
+
+## Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Onboarding completed successfully; configuration saved. |
+| `1` | `EXIT_UNUSABLE_KEYRING` | No usable keyring backend found. Export `KSEF_TOKEN` as a fallback or run in a session that has access to an OS secret store. |

@@ -1,0 +1,108 @@
+---
+title: "KSeF API Rate Limits and Budget Management"
+sidebarTitle: "Rate Limits"
+description: "How ksef-mcp reads live KSeF allowances, tracks hourly budget spend, schedules sync passes, and avoids the repeated-retry penalty the Ministry enforces."
+---
+
+The KSeF API imposes rate limits on every operation family. ksef-mcp reads those limits from the API on each sync pass and tracks spending in a per-session budget counter. This page explains the limit structure, how the budget counter works, why sync scheduling is fixed rather than caller-controlled, and what happens when KSeF returns a 429.
+
+## Published limit values (unverified)
+
+The values commonly cited in KSeF developer discussions are **8 requests per second, 16 per minute, and 20 per hour** for export operations. These figures have **not been verified against official Ministry of Finance documentation** and should not be treated as authoritative. Do not build planning assumptions on them.
+
+<Warning>
+ksef-mcp does not hard-code these values. It reads the actual limits from the `GET /rate-limits` endpoint at the start of every sync session. If the Ministry grants your subject a higher allowance, ksef-mcp uses it automatically. If it is lower, the budget counter enforces that lower ceiling.
+</Warning>
+
+## Live limit reading
+
+At the start of every synchronisation pass, ksef-mcp opens a KSeF session and calls `session.read_limits()`. The response populates a `RateLimits` struct with four `OperationLimit` values — one per operation family:
+
+| Operation family | What it covers |
+|---|---|
+| `metadata_query` | Querying invoice metadata by period, date type, and subject role |
+| `export` | Starting a new export package (`POST /batch/init`) |
+| `export_status` | Polling the status of a running export |
+| `invoice_download` | Fetching a single invoice by its KSeF number |
+
+Each `OperationLimit` carries `per_second`, `per_minute`, and `per_hour` values. The budget counter tracks hourly spend only — the per-second and per-minute figures are informational.
+
+## Budget counter
+
+The `QueryBudget` class tracks spending per operation family within a rolling one-hour window. Before every network call in an operation family, `budget.spend(operation)` is called. If the hourly allowance for that family is exhausted, `KsefRequestRejected` is raised and the call is never made.
+
+```python
+# From ksef_port/budget.py — simplified for illustration
+def spend(self, operation: Operation) -> None:
+    left = self.remaining(operation)
+    if left == 0:
+        raise KsefRequestRejected(
+            f"The hourly allowance for {operation} is spent "
+            f"({self.allowance(operation).per_hour} per hour). Waiting is "
+            f"cheaper than a call KSeF will refuse."
+        )
+    self._recent(operation).append(self.clock())
+```
+
+The window is maintained as a deque of timestamps. Entries older than one hour are discarded on each `spend()` call, so the counter is self-expiring — no manual reset is needed between sync passes.
+
+<Note>
+Downloading the parts of an export package (the presigned URLs KSeF provides after an export completes) does **not** count against any budget operation. Those URLs reach external storage without a KSeF credential. Only `export`, `export_status`, `metadata_query`, and `invoice_download` are metered.
+</Note>
+
+## Sync scheduling
+
+ksef-mcp distinguishes two cadence tiers for the four subject roles:
+
+<CardGroup cols={2}>
+  <Card title="SELLER and BUYER" icon="clock">
+    Synced at most once every **15 minutes** (`MINIMUM_INTERVAL`). These are the high-frequency roles — a company's own sales and purchases.
+  </Card>
+  <Card title="THIRD_SUBJECT and AUTHORIZED_SUBJECT" icon="moon">
+    Synced at most once per **day** (`OCCASIONAL_INTERVAL`), and only during UTC **00:00–06:00** (`NIGHT_WINDOW_OPENS_UTC` / `NIGHT_WINDOW_CLOSES_UTC`). These roles appear rarely and are kept off the daytime rotation.
+  </Card>
+</CardGroup>
+
+At most one export per subject role is started per sync pass. The scheduling constants come from `synchronisation.py` and are not configurable from a tool call:
+
+```python
+MINIMUM_INTERVAL: Final[timedelta] = timedelta(minutes=15)
+OCCASIONAL_INTERVAL: Final[timedelta] = timedelta(days=1)
+NIGHT_WINDOW_OPENS_UTC: Final[int] = 0
+NIGHT_WINDOW_CLOSES_UTC: Final[int] = 6
+```
+
+The night window is defined in **UTC**, not local time. A window tied to a local timezone would move with daylight saving and become impossible to reason about from the records on disk.
+
+### Why sync parameters are not caller-controlled
+
+The MCP tools `synchronise_invoices`, `list_recent_invoices`, and `review_new_invoices` accept no window or date arguments. This is deliberate:
+
+- A caller-supplied date window passed directly to the KSeF export API could exhaust the entire hourly export budget in a single agent turn.
+- The Ministry registers rate limit breaches. Repeated breaches are read as an attempt to circumvent the limit, and the block duration is extended each time.
+
+The scheduling logic in `synchronisation.py` is the single place where this is decided — not at the tool call boundary.
+
+## No automatic retry on rate limit
+
+When KSeF returns HTTP 429, ksef-mcp reads the `Retry-After` response header and surfaces the wait duration. It **never retries automatically**.
+
+```
+KseF answered 429. retry_after is the server's own wait, in seconds.
+```
+
+The `KsefRateLimited` exception carries `retry_after: int | None`. If the header is absent (`None`), the message says to wait before retrying without quoting a duration. If present, the exact value from the header is printed.
+
+<Warning>
+Do not build retry loops around ksef-mcp commands. The Ministry logs repeated rate-limited calls as circumvention attempts. Each such attempt can extend the block window rather than reduce it. Wait for the `Retry-After` duration, then retry once.
+</Warning>
+
+The built-in retry inside the underlying `ksef2` library is limited to a single attempt with a four-second window. The actual `Retry-After` values from KSeF can be measured in minutes, so a retry loop would run to completion without the limit clearing — it only adds calls to a pattern that already looks like circumvention.
+
+## Period cache
+
+Closed date windows (periods where the export has been fully archived and the high-water mark has advanced past the window end) are cached on disk in the platform cache directory — separate from the data directory. A repeat call to `synchronise_invoices` within the same hour for a fully-synced period is served from cache at zero budget cost.
+
+<Tip>
+If you need to inspect whether the budget has headroom before running a sync, call `ksef-mcp verify`. That command makes one metadata query (consuming one `metadata_query` allowance) and reports the result. It does not start any exports.
+</Tip>

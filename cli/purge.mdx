@@ -1,0 +1,185 @@
+---
+title: "ksef-mcp purge — Remove Invoice Files from the Archive"
+sidebarTitle: "purge"
+description: "Permanently delete invoice XML files by subject and date window. Preserves the deduplication index so re-synchronisation will not re-download purged files."
+---
+
+The `purge` command permanently removes invoice XML files from the local archive. It is the safety valve that lets you free disk space or comply with a data-retention obligation — for example, removing a former client's invoices from an accounting office's machine, or clearing invoices older than a specific tax year. Purge is deliberately manual and cannot be scripted past its confirmation prompt.
+
+<Warning>
+**Purge is irreversible.** Once invoice bodies are deleted they cannot be recovered from ksef-mcp. If you need the originals again you must re-download them from KSeF — subject to your hourly API budget and the Ministry's retention policy for the KSeF system itself. Always review the printed plan before confirming.
+</Warning>
+
+## Syntax
+
+```bash title="Syntax"
+ksef-mcp purge [--nip NIP] [--od DATE] [--do DATE]
+```
+
+## Flags
+
+<ParamField path="--nip" type="string">
+  The NIP (Polish tax identifier) of the subject whose archive should be purged.
+  Defaults to the NIP stored in the configuration file. Use this flag when the
+  machine holds archives for multiple subjects and you want to target one
+  specifically — for example, when an accounting office offboards a client.
+</ParamField>
+
+<ParamField path="--od" type="string">
+  Earliest KSeF acceptance date to include in the purge window, in ISO 8601
+  format (`YYYY-MM-DD`), **inclusive**. The date is taken from the KSeF number
+  itself (the `YYYYMMDD` group that encodes the day the invoice was registered
+  at KSeF), not from the invoice's own issue date.
+
+  Omit to start from the beginning of the archive.
+</ParamField>
+
+<ParamField path="--do" type="string">
+  Latest KSeF acceptance date to include in the purge window, in ISO 8601
+  format (`YYYY-MM-DD`), **inclusive**. Omit to extend the window to the most
+  recent invoice in the archive.
+</ParamField>
+
+Both date flags are optional and can be combined freely. Providing neither purges the entire archive for the subject.
+
+## How purge works
+
+<Steps>
+  <Step title="Load configuration">
+    Reads the configuration file. If no configuration is found, exits with
+    code **3** and tells you to run `ksef-mcp onboarding`.
+  </Step>
+
+  <Step title="Validate the date window">
+    If both `--od` and `--do` are provided, checks that `--od` is not later
+    than `--do`. A swapped pair is refused immediately with code **7** —
+    silently matching nothing would make an inverted window look like a clean
+    archive and mask the mistake.
+  </Step>
+
+  <Step title="Build the purge plan">
+    Scans the archive directory and classifies each file:
+
+    - Files whose name is a valid KSeF number **and** whose acceptance date falls
+      inside the window are **candidates** (to be deleted).
+    - Files whose name is a valid KSeF number but whose date is outside the
+      window are **retained** (listed in the summary, untouched).
+    - Files whose name is **not** a KSeF number are **unrecognised** — reported
+      in the summary but never deleted. An irreversible operation does not guess.
+  </Step>
+
+  <Step title="Print the full plan and ask for confirmation">
+    Prints every KSeF number that would be deleted, the total size to be freed,
+    the count of retained invoices, and any unrecognised files. The default
+    answer to the confirmation prompt is **no** — pressing Enter without typing
+    anything declines the purge and exits with code **6**.
+
+    There is no `--force` flag. The confirmation step cannot be bypassed.
+  </Step>
+
+  <Step title="Delete and record">
+    Unlinks each candidate file. After deletion, writes a single entry to the
+    audit trail recording the operation, the subject NIP, the environment, the
+    date window, and the KSeF numbers that were deleted. The audit entry is
+    written whether or not the archive directory still exists.
+  </Step>
+</Steps>
+
+## What purge does NOT touch
+
+The following files are deliberately left unchanged:
+
+| File | Why it is preserved |
+|------|---------------------|
+| `deduplication.json` | The index that prevents re-downloading already-seen invoices. Intact after purge, so the next synchronisation run will not re-fetch the deleted files and waste your API budget. |
+| `synchronisation.json` | Records how far KSeF has been queried (the continuation point). Resetting it would force a full re-synchronisation. |
+| `review.json` | Records which invoices have already been shown to a user. Still true after the body is gone. |
+| `audit.jsonl` | The append-only audit trail. Purge **adds** a record to it; it never trims it. |
+
+<Note>
+  The audit trail entry for a purge operation outlives the invoice files it names.
+  After purging, `audit.jsonl` still contains a line recording exactly which KSeF
+  numbers were deleted, by whom, and when — giving you a reconstruction path even
+  after the bodies are gone.
+</Note>
+
+## Re-synchronisation after purge
+
+Because the deduplication index is preserved, a synchronisation run after a purge will **not** re-download the deleted invoices. The index still remembers those KSeF numbers as already held. If you want to recover deleted invoice bodies you must explicitly clear the deduplication index first — that is not done by `purge` and requires manual intervention.
+
+## Examples
+
+### Purge all invoices for a single year
+
+```bash title="Purge a full calendar year"
+$ uvx ksef-mcp purge --od 2023-01-01 --do 2023-12-31
+Archiwum podmiotu 1234567890 (production)
+Katalog: /home/alice/ksef/1234567890
+Zakres: faktury z datą wpływu do KSeF od 2023-01-01 do 2023-12-31.
+
+Do skasowania (3, 42.7 kB):
+  20230101-00000000-ABC12345-20230101-000001  2023-01-01
+  20230315-00000000-ABC12345-20230315-000002  2023-03-15
+  20231120-00000000-ABC12345-20231120-000003  2023-11-20
+Zostaje w archiwum: 14.
+
+Nie ruszam indeksu deduplikacji, punktów kontynuacji ani
+dziennika przeglądu — po wyczyszczeniu synchronizacja nie
+ściągnie tych faktur powtórnie.
+Skasować 3 faktur bezpowrotnie? (t/n) [n]: t
+Skasowane faktury: 3, zwolnione 42.7 kB.
+Indeks deduplikacji pamięta nadal 17 numerów KSeF:
+  /home/alice/ksef/1234567890/deduplication.json
+Wpis w dzienniku audytu: /home/alice/.local/share/ksef-mcp/subjects/1234567890/production/audit.jsonl
+```
+
+### Purge declined by user
+
+```bash title="Declining the purge"
+$ uvx ksef-mcp purge --od 2023-01-01 --do 2023-12-31
+...
+Skasować 3 faktur bezpowrotnie? (t/n) [n]:
+Zostawiam archiwum bez zmian.
+$ echo $?
+6
+```
+
+### Invalid date window
+
+```bash title="Inverted date window"
+$ uvx ksef-mcp purge --od 2023-12-31 --do 2023-01-01
+The purge window starts on 2023-12-31 and ends on 2023-01-01, so it covers no day. Refusing to report an empty archive for a swapped pair of dates.
+$ echo $?
+7
+```
+
+### Purge with unrecognised files
+
+```bash title="Archive with non-KSeF files"
+$ uvx ksef-mcp purge --nip 1234567890
+Archiwum podmiotu 1234567890 (production)
+Katalog: /home/alice/ksef/1234567890
+Zakres: faktury z datą wpływu do KSeF od początku archiwum do dziś.
+
+Do skasowania (5, 71.2 kB):
+  20240101-00000000-ABC12345-20240101-000001  2024-01-01
+  ...
+Zostaje w archiwum: 0.
+Zostawiam 2 plików, których nazwa nie jest numerem KSeF — pierwszy z nich: notes.txt
+...
+```
+
+<Note>
+  Files whose names are not valid KSeF numbers — such as `notes.txt` or any
+  file placed in the archive directory manually — are always left untouched and
+  reported in the summary. They are never deleted, regardless of the date window.
+</Note>
+
+## Exit codes
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0` | `EXIT_OK` | Purge completed (or nothing matched the window — also a success). |
+| `3` | `EXIT_NOT_CONFIGURED` | No configuration file found. Run `ksef-mcp onboarding`. |
+| `6` | `EXIT_PURGE_DECLINED` | User did not confirm the deletion. Archive is unchanged. |
+| `7` | `EXIT_INVALID_WINDOW` | `--od` is later than `--do`. Correct the date arguments and retry. |

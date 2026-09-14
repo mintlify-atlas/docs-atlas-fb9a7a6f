@@ -1,0 +1,106 @@
+---
+title: "KSeF Environments: Test, Demo, and Production"
+sidebarTitle: "Environments"
+description: "The three KSeF registry environments, their hostnames and default settings, data isolation guarantees, and how to switch environments safely without mixing archives."
+---
+
+ksef-mcp supports all three KSeF environments — test, demo, and production — each backed by a separate Ministry of Finance API endpoint. The default is always `test`. Choosing `production` requires an explicit opt-in during onboarding, and every MCP tool response carries an `environment` field so an AI agent always knows which registry it is talking to.
+
+## The three environments
+
+| Environment | API hostname | Purpose |
+|---|---|---|
+| `test` | `ap-test.ksef.mf.gov.pl` | Default. Safe for experimentation, integration testing, and onboarding. |
+| `demo` | `ap-demo.ksef.mf.gov.pl` | Demonstration and sandbox scenarios. |
+| `production` | `ap.ksef.mf.gov.pl` | The live national registry. Real invoices, real rate limits. |
+
+These values come from the `KsefEnvironment` enum in `config.py`. The default is `test` — a comment in the source states the reasoning explicitly:
+
+> Never PRODUCTION: a default that reaches the live registry would make an accidental run a real filing, and production rate limits are a tenth of test.
+
+<Warning>
+Do not configure `production` as your environment during development or integration testing. Every query to the production endpoint is logged by the Ministry of Finance. Rate limits on production may be a fraction of those on test. Use `test` until you have verified your setup end-to-end.
+</Warning>
+
+## Data isolation
+
+Each environment has its own completely separate set of on-disk state. There is no path where test and production data can mix:
+
+<CardGroup cols={2}>
+  <Card title="Invoice archive" icon="folder">
+    Stored under `<invoice_directory>/<environment>/`. Invoices retrieved from test are never written into the production archive and vice versa.
+  </Card>
+  <Card title="Sync state" icon="rotate">
+    The high-water mark and continuation points for each subject role are stored per environment. A test sync run does not advance the production pointer.
+  </Card>
+  <Card title="Audit trail" icon="shield">
+    `audit.jsonl` is written at `<user_data_path>/ksef-mcp/subjects/<NIP>/<environment>/audit.jsonl`. Each environment has its own immutable record.
+  </Card>
+  <Card title="Period cache & review ledger" icon="database">
+    The cache of closed date windows and the record of already-reviewed invoices are both scoped per environment. A reviewed invoice in test is not marked as reviewed in production.
+  </Card>
+</CardGroup>
+
+This isolation means you can run onboarding against `test`, explore the sync behaviour, and later re-run onboarding for `production` without any risk of the two archives merging or the review ledger from one environment polluting the other.
+
+## How to switch environments
+
+Re-run `ksef-mcp onboarding` and choose a different environment when prompted. The existing archive, audit trail, and sync state for the previous environment are preserved exactly as they are — onboarding does not touch any data outside the configuration file.
+
+<Steps>
+  <Step title="Run onboarding again">
+    ```bash
+    ksef-mcp onboarding
+    ```
+  </Step>
+  <Step title="Choose the target environment">
+    When prompted for the KSeF environment, enter `test`, `demo`, or `production`. The default shown in brackets is the value from your current `configuration.json`.
+
+    ```
+    Środowisko KSeF (test/demo/production) [test]:
+    ```
+  </Step>
+  <Step title="Confirm the saved configuration">
+    Onboarding prints a summary and saves the new `configuration.json`. No KSeF call is made at this step — the environment switch is a local configuration change only.
+
+    ```
+    Konfiguracja zapisana:
+      Środowisko: production
+    ```
+  </Step>
+  <Step title="Verify the connection">
+    Run `ksef-mcp verify` to confirm that the token is valid for the new environment. This is the step that actually contacts KSeF and spends one API call.
+
+    ```bash
+    ksef-mcp verify
+    ```
+  </Step>
+</Steps>
+
+<Note>
+`ksef-mcp verify` is deliberately separate from onboarding. Every KSeF query consumes hourly API budget, and onboarding is often re-run while fixing configuration. The connection check is a command you invoke when you mean to spend that budget.
+</Note>
+
+## Production caution
+
+Production is the live KSeF registry. A few differences from `test` are worth keeping in mind:
+
+- **Rate limits**: production rate limits may be stricter than test. The exact values are read from `GET /rate-limits` at runtime, so ksef-mcp will enforce whatever the Ministry grants your subject.
+- **Every query is logged**: the Ministry registers each KSeF query against your NIP. Use `ksef-mcp verify` sparingly on production — it consumes one metadata query from your hourly allowance.
+- **Invoices are real**: invoices downloaded in production mode contain real counterparty data. Review your cloud sync and file permission settings before configuring a production invoice directory (see [Security](/guides/security)).
+
+## Environment stamp on tool responses
+
+Every MCP tool response that involves KSeF data includes an `environment` field. This means an AI agent calling `synchronise_invoices` or `list_recent_invoices` always receives an explicit signal about which registry the data came from — there is no ambiguity about whether a response describes test or production invoices.
+
+```json
+{
+  "environment": "production",
+  "nip": "1234567890",
+  "directions": [...]
+}
+```
+
+<Tip>
+When building agent workflows that process invoices, always check the `environment` field before acting on KSeF data. A misconfigured MCP client pointing at `test` will return test invoices, and silently treating them as production data is a subtle failure mode worth guarding against.
+</Tip>

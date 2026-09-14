@@ -1,20 +1,84 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "ksef-mcp: Local MCP Server for KSeF e-Invoicing"
+sidebarTitle: "Home"
+description: "Connect AI agents to Poland's national e-invoicing system. ksef-mcp runs locally — invoice data never leaves your machine."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+ksef-mcp is a local [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI agents (Claude, Claude Code, and any MCP-compatible client) direct access to your invoices in KSeF — Poland's national e-invoicing system. It runs on your own machine via `uvx ksef-mcp`, synchronises invoice packages incrementally, and maintains a tamper-evident audit trail of every access.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install ksef-mcp and run your first invoice sync in under 5 minutes.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Set your NIP, KSeF environment, token storage, and invoice directory.
+  </Card>
+  <Card title="MCP Tools" icon="wrench" href="/tools/overview">
+    Explore the five tools exposed to your AI agent: sync, list, export, review, and server info.
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/cli/onboarding">
+    Full reference for all CLI commands: onboarding, token, verify, skill, and purge.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What ksef-mcp does
+
+The server exposes KSeF operations as MCP tools that an AI agent can call during a conversation. You configure it once, then ask your agent to fetch invoices, list what arrived last month, or export a CSV for your accountant — without leaving the chat.
+
+<CardGroup cols={2}>
+  <Card title="Incremental sync" icon="arrows-rotate">
+    Downloads only what's new since the last run. Survives restarts via continuation points stored on disk.
+  </Card>
+  <Card title="Deduplication" icon="copy-slash">
+    A per-subject index prevents the same invoice from being downloaded twice, even after a purge.
+  </Card>
+  <Card title="Audit trail" icon="scroll">
+    Every read is appended to an immutable JSONL log: who accessed which KSeF numbers, under what authorisation.
+  </Card>
+  <Card title="Rate-limit aware" icon="gauge">
+    Reads live limits from KSeF and enforces the 20-exports-per-hour ceiling automatically. Never spends your budget silently.
+  </Card>
+  <Card title="Secure token storage" icon="lock">
+    Tokens live in the system keyring (macOS Keychain, GNOME Keyring, Windows Credential Store). They never appear in config files.
+  </Card>
+  <Card title="Accountant-ready CSV" icon="file-csv">
+    Export a reconciliation spreadsheet for any calendar month — nine columns, exact decimal amounts, a KOD I verification code per row.
+  </Card>
+</CardGroup>
+
+## Getting started
+
+<Steps>
+  <Step title="Install via uvx">
+    No separate install step needed. `uvx` fetches and runs the package in one command.
+    ```bash
+    uvx ksef-mcp onboarding
+    ```
+  </Step>
+  <Step title="Run onboarding">
+    `onboarding` checks prerequisites, prompts for your NIP, stores your KSeF token in the system keyring, and saves configuration.
+  </Step>
+  <Step title="Register with your MCP client">
+    Add the server block to your MCP client config (`.mcp.json` or `claude_desktop_config.json`):
+    ```json
+    {
+      "mcpServers": {
+        "ksef": {
+          "command": "uvx",
+          "args": ["ksef-mcp"]
+        }
+      }
+    }
+    ```
+  </Step>
+  <Step title="Verify and sync">
+    Confirm the connection manually, then ask your agent to synchronise invoices.
+    ```bash
+    uvx ksef-mcp verify
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The default environment is **test** (`ap-test.ksef.mf.gov.pl`). Switch to `production` only when you have verified your configuration and are ready to query the live registry.
+</Note>

@@ -1,0 +1,83 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "ksef-mcp",
+  "projectDescription": "A local MCP server that connects AI agents to Poland's national e-invoicing system (KSeF), enabling incremental invoice synchronisation, metadata listing, CSV export, and new-invoice review — all without routing data through any third-party service.",
+  "theme": "luma",
+  "primaryColor": "#1A56DB",
+  "lightColor": "#EBF2FF",
+  "darkColor": "#0F3276",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/onboarding",
+              "cli/token",
+              "cli/verify",
+              "cli/skill",
+              "cli/purge"
+            ]
+          },
+          {
+            "group": "MCP Tools",
+            "pages": [
+              "tools/overview",
+              "tools/synchronise-invoices",
+              "tools/list-recent-invoices",
+              "tools/export-period-statement",
+              "tools/review-new-invoices"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/security",
+              "guides/rate-limits",
+              "guides/environments",
+              "guides/headless-and-wsl"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Local-only MCP server — invoice data never leaves the user's machine",
+    "Incremental synchronisation with KSeF export packages (AES-256-CBC decryption)",
+    "Deduplication index prevents re-downloading already-archived invoices",
+    "Immutable, append-only audit trail (JSONL) recording every data access",
+    "Rate-limit-aware budget counter respecting KSeF's 20-exports-per-hour ceiling",
+    "System keyring integration (macOS Keychain, GNOME Keyring, Windows Credential Store)",
+    "KSEF_TOKEN environment variable fallback for headless/WSL/container environments",
+    "Claude Code skill installer for agent-aware usage context",
+    "CSV period statement generation for accountant handover",
+    "New-invoice review ledger tracking what has already been shown to the operator"
+  ],
+  "publicApiSurface": [
+    "MCP tool: server_info()",
+    "MCP tool: synchronise_invoices()",
+    "MCP tool: list_recent_invoices()",
+    "MCP tool: export_period_statement(period: str, working_directory: str | None)",
+    "MCP tool: review_new_invoices()",
+    "CLI: ksef-mcp onboarding",
+    "CLI: ksef-mcp doctor",
+    "CLI: ksef-mcp verify",
+    "CLI: ksef-mcp token set|delete|status --nip <NIP>",
+    "CLI: ksef-mcp skill install --scope user|project",
+    "CLI: ksef-mcp purge [--nip NIP] [--od DATE] [--do DATE]",
+    "Config: KsefEnvironment (test | demo | production)",
+    "Config: KSEF_TOKEN environment variable (fallback token source)",
+    "Config: configuration.json (nip, environment, keyring_backend, invoice_directory)"
+  ]
+}

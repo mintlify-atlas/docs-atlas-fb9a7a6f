@@ -1,0 +1,194 @@
+---
+title: "export_period_statement — Monthly Purchase Invoice CSV Export"
+sidebarTitle: "export_period_statement"
+description: "Writes one calendar month of purchase invoices to a semicolon-delimited CSV file with a KOD I verification code per row. Safe to call twice — closed months are cached."
+---
+
+`export_period_statement` produces a CSV file containing all purchase invoices (BUYER subject type) for a given calendar month. The file is formatted for Polish accounting software and spreadsheets: semicolon-delimited, comma decimal separator, UTF-8 with a BOM. Each row includes a KOD I verification code — a SHA-256 digest of the archived invoice body combined with the seller NIP and issue date — so an accountant can verify the file's integrity against the Ministry's portal without needing access to the original XML.
+
+The tool writes the file to disk and returns the path. Invoice content never appears in the tool response itself. The chat window carries the path, the row count, and the gross totals — nothing more.
+
+## Parameters
+
+<ParamField path="period" type="string" required>
+  The calendar month to export, spelled as `YYYY-MM`. Examples: `"2025-06"`, `"2024-12"`. The month is the unit an accountant closes, and having both date bounds fixed is what lets a repeat call for the same month be answered from the on-disk cache at no API cost.
+</ParamField>
+
+<ParamField path="working_directory" type="string">
+  Optional. Absolute or home-relative path to the directory where the CSV file should be written. Overrides the invoice directory configured during onboarding for this one call only. Subject to safety checks — see below.
+</ParamField>
+
+## Agent invocation
+
+<CodeGroup>
+```json Current month, default directory
+{
+  "tool": "export_period_statement",
+  "arguments": {
+    "period": "2025-06"
+  }
+}
+```
+
+```json Specific month, custom directory
+{
+  "tool": "export_period_statement",
+  "arguments": {
+    "period": "2025-03",
+    "working_directory": "/home/user/accounting/march-2025"
+  }
+}
+```
+</CodeGroup>
+
+## Output file
+
+The file is named `zestawienie-YYYY-MM-<NIP>.csv` — the word first so it is recognisable in a mail client, the month so a year of files sorts chronologically, the NIP so it stays identifiable after being detached from its directory.
+
+### Columns
+
+The CSV has nine columns, in this order:
+
+| # | Column header | Content |
+|---|---|---|
+| 1 | `Numer KSeF` | KSeF-assigned invoice number |
+| 2 | `Numer faktury sprzedawcy` | Seller's own invoice number |
+| 3 | `Data wystawienia` | Issue date (ISO 8601, `YYYY-MM-DD`) |
+| 4 | `NIP sprzedawcy` | Seller's 10-digit NIP |
+| 5 | `Nazwa sprzedawcy` | Seller's legal name |
+| 6 | `Brutto` | Gross amount (comma decimal separator) |
+| 7 | `Netto` | Net amount (comma decimal separator) |
+| 8 | `VAT` | VAT amount (comma decimal separator) |
+| 9 | `KOD I` | Verification code or `brak pliku w archiwum` |
+
+Addresses, bank account numbers, invoice lines, and local file paths are absent deliberately. The file is designed to be attached to an e-mail — it carries what a reconciliation needs and no more.
+
+### Amounts
+
+Amounts are written exactly as KSeF provided them, using `format(value, "f")` — no rounding, no floating-point conversion anywhere on the path. The decimal separator is a comma (`,`), and the field separator is a semicolon (`;`), which is what Polish Excel and LibreOffice Calc expect by default.
+
+<Warning>
+  When invoices in the period span multiple currencies, the `Brutto` column contains figures in mixed currencies without a currency label. The `gross_totals` field in the tool response breaks them out by currency. Sum from the response, not from the spreadsheet column.
+</Warning>
+
+### KOD I verification code
+
+The KOD I code in column 9 is computed locally from three components:
+
+1. The SHA-256 digest of the archived invoice XML body (the file in the archive, not a metadata row)
+2. The seller's NIP
+3. The issue date
+
+The format is `<seller_NIP>-<YYYYMMDD>-<sha256hex>`.
+
+If the invoice body has not yet been downloaded by `synchronise_invoices`, the cell contains `brak pliku w archiwum` ("no file in archive") instead of a code. The `warnings` field in the response lists how many rows are in this state.
+
+<Tip>
+  Run `synchronise_invoices` before exporting a statement for months where the archive may be incomplete. The `warnings` field will tell you if any rows are missing their verification code.
+</Tip>
+
+## working_directory safety rules
+
+The declared working directory is checked before any file is written:
+
+<Steps>
+  <Step title="Internal root check">
+    The directory is rejected if it lies inside either the data root (`~/.local/share/ksef-mcp`) or the cache root. These are internal storage; writing statements there would make "delete the statements" capable of deleting invoices or sync continuation points.
+  </Step>
+  <Step title="Directory creation">
+    If the directory does not exist, it is created with mode `0700` (owner read/write/execute only). Existing directories are not modified.
+  </Step>
+  <Step title="Cloud sync detection">
+    If the directory path matches known cloud sync folder patterns (Dropbox, OneDrive, Google Drive, iCloud, etc.), a warning is added to the `warnings` list. The statement is still written — the warning is advisory, not a refusal. The file names counterparties and should not travel to a third-party server without review.
+  </Step>
+</Steps>
+
+## Caching
+
+A closed calendar month (both date bounds in the past) is cached after the first call. A second call for the same period costs zero metadata queries and regenerates the file from cached metadata. The `from_cache` field indicates whether the metadata came from cache.
+
+## Response model
+
+`export_period_statement` returns a `StatementResult` object.
+
+<ResponseField name="nip" type="string" required>
+  The 10-digit NIP of the authenticated taxpayer.
+</ResponseField>
+
+<ResponseField name="environment" type="string" required>
+  The KSeF environment: `"test"` or `"prod"`.
+</ResponseField>
+
+<ResponseField name="period" type="string" required>
+  The calendar month that was exported, in `YYYY-MM` format.
+</ResponseField>
+
+<ResponseField name="path" type="string" required>
+  Absolute path to the CSV file that was written. This is the file to attach to an e-mail or open in a spreadsheet.
+</ResponseField>
+
+<ResponseField name="row_count" type="integer" required>
+  Number of invoice rows in the file (excluding the header row).
+</ResponseField>
+
+<ResponseField name="gross_totals" type="list[GrossTotal]" required>
+  Gross totals grouped by currency. Use these figures for reconciliation — never the raw sum of the Brutto column when multiple currencies are present.
+
+  <Expandable title="GrossTotal fields">
+    <ResponseField name="currency" type="string" required>
+      ISO 4217 currency code.
+    </ResponseField>
+    <ResponseField name="gross" type="Decimal" required>
+      Sum of gross amounts in this currency, as an exact decimal.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="complete" type="boolean" required>
+  `true` if KSeF returned all invoices for the period in a single response. `false` means the API had more results than fit in one page and the statement is incomplete. When `false`, a warning is also added to `warnings`.
+</ResponseField>
+
+<ResponseField name="from_cache" type="boolean" required>
+  `true` if the invoice metadata came from the on-disk period cache rather than a live API call.
+</ResponseField>
+
+<ResponseField name="queried_at" type="string" required>
+  ISO 8601 datetime when the metadata was fetched (either from cache or live). Always present for `export_period_statement` (unlike some other tools, this field is never `null`).
+</ResponseField>
+
+<ResponseField name="message" type="string" required>
+  A one-line summary: period, invoice count, gross totals, and the file path.
+</ResponseField>
+
+<ResponseField name="warnings" type="list[string]" required>
+  Advisory messages that do not prevent the file from being written, but must be understood before the file is forwarded. Possible warnings include:
+  - Cloud sync path detected — the directory may synchronise to a third-party server.
+  - Directory mode was not `0700` — the directory pre-existed with different permissions.
+  - KSeF returned an incomplete response — the statement does not cover the full period.
+  - Multiple currencies in the period — the Brutto column mixes currencies.
+  - Some invoice bodies are missing from the archive — those rows have no KOD I code.
+</ResponseField>
+
+## Example response
+
+```json
+{
+  "nip": "1234567890",
+  "environment": "prod",
+  "period": "2025-05",
+  "path": "/home/user/invoices/zestawienie-2025-05-1234567890.csv",
+  "row_count": 14,
+  "gross_totals": [
+    { "currency": "PLN", "gross": "38420.00" }
+  ],
+  "complete": true,
+  "from_cache": false,
+  "queried_at": "2025-06-15T09:14:22+00:00",
+  "message": "Zestawienie za 2025-05: 14 faktur, brutto 38420.00 PLN. Plik: /home/user/invoices/zestawienie-2025-05-1234567890.csv",
+  "warnings": []
+}
+```
+
+## Audit trail
+
+`export_period_statement` appends a single `disk` disclosure entry to the audit trail. The entry records the operation name, the NIP, the environment, the period as the criteria, the row count, and the KSeF numbers of all invoices in the file. KSeF numbers are recorded for audit purposes only — they do not appear in the tool response itself, where fifty numbers in a chat window would be noise rather than signal.
